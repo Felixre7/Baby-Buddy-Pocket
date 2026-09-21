@@ -29,3 +29,5 @@ The bundle is `app/build/outputs/bundle/release/app-release.aab`. It is **unsign
 6. If the personal developer account was created after November 13, 2023, the production-access process requires a closed test with at least 12 testers opted in continuously for 14 days. Emulators do not replace those testers. Confirm the requirement in the actual account. [Testing requirements](https://support.google.com/googleplay/android-developer/answer/14151465?hl=en).
 
 This document is a release worklist, not a claim that Play has approved the app. No new hosting service, background worker, or production dependency is needed for these preparation steps.
+
+Production support is researched in [the diagnostics proposal](DIAGNOSTICS.md): use Play vitals plus user-reviewed local reports and GitHub Issues. The in-app exporter is proposed, not implemented in 0.1.11.
