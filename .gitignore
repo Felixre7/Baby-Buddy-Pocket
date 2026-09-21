@@ -1,6 +1,12 @@
 .gradle/
 .gradle-home/
 **/build/
+*.apk
+*.aab
+*.apk.idsig
+*.ap_
+*.dex
+*.class
 local.properties
 .idea/
 *.iml
