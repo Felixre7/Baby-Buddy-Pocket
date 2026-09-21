@@ -63,6 +63,8 @@ Initial sync downloads all history. Very large servers may take longer. There is
 
 ## Build it yourself
 
+Compatibility results are recorded in [the emulator matrix](docs/COMPATIBILITY.md). For store signing, the app bundle, and remaining publication work, see [Google Play release preparation](docs/PLAY-RELEASE.md).
+
 Install **JDK 17** and **Android SDK Platform 36**. Android Studio can install the SDK/platform/build tools for you. No Node, npm, Kotlin plugin, NDK, account, API key in source, or backend build is needed.
 
 ### Android Studio
@@ -98,7 +100,7 @@ Android may ask you to allow installations from the app opening the APK. Self-bu
 
 ### Updating an installed APK
 
-Downloading the APK through Proton Drive or another file-transfer service does not change installation behavior. Open the new APK and accept Android's **Update** prompt; do not uninstall first. An in-place update preserves settings, the saved connection, cached records, and pending entries. The application ID and signing certificate must match, and the internal `versionCode` must be equal or higher. Reinstalling the same version is allowed; each delivered build gets an increased code and a distinct filename to make downloads easy to identify. Version 0.1.10 uses code 11. The update rules below apply only when the application ID matches; 0.1.10 cannot replace pre-publication prototypes.
+Downloading the APK through Proton Drive or another file-transfer service does not change installation behavior. Open the new APK and accept Android's **Update** prompt; do not uninstall first. An in-place update preserves settings, the saved connection, cached records, and pending entries. The application ID and signing certificate must match, and the internal `versionCode` must be equal or higher. Reinstalling the same version is allowed; each delivered build gets an increased code and a distinct filename to make downloads easy to identify. Version 0.1.11 uses code 12. The update rules below apply only when the application ID matches; 0.1.10 cannot replace pre-publication prototypes.
 
 The distributed test APKs currently use this build machine's Android debug signing key. Keep that key private and preserve it for future compatible test updates. A self-build on another machine normally uses a different debug key. Changing to a different release key later requires a deliberate migration; it is not an interchangeable update. See [Android's update requirements](https://developer.android.com/google/play/app-updates).
 

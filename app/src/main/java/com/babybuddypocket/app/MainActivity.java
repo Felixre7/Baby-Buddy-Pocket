@@ -23,12 +23,13 @@ public final class MainActivity extends Activity {
   private int tab = 0, limit = 60;
   private boolean choosingActivity;
   private Long finishingTimer;
+  private Bundle pendingForm;
   private String filter = "all", query = "", serverDraft = "", tokenDraft = "";
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final Runnable refresh =
       new Runnable() {
         public void run() {
-          if (!form.visible()) app.sync();
+          if (pendingForm == null && !form.visible()) app.sync();
           handler.postDelayed(this, 60000);
         }
       };
@@ -62,6 +63,8 @@ public final class MainActivity extends Activity {
               WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
                   | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
     } else {
+      getWindow().setStatusBarColor(ui.background);
+      getWindow().setNavigationBarColor(ui.background);
       getWindow()
           .getDecorView()
           .setSystemUiVisibility(
@@ -97,11 +100,18 @@ public final class MainActivity extends Activity {
               });
     render();
     if (state != null && state.getBundle("form") != null) {
-      Bundle saved = state.getBundle("form");
-      form.show(
-          saved.getString("endpoint"),
-          saved.containsKey("timer") ? saved.getLong("timer") : null,
-          saved);
+      pendingForm = state.getBundle("form");
+      // Older Android versions need the activity window attached before restoring a dialog.
+      root.post(
+          () -> {
+            if (isFinishing() || isDestroyed() || pendingForm == null) return;
+            Bundle saved = pendingForm;
+            pendingForm = null;
+            form.show(
+                saved.getString("endpoint"),
+                saved.containsKey("timer") ? saved.getLong("timer") : null,
+                saved);
+          });
     }
   }
 
@@ -110,7 +120,7 @@ public final class MainActivity extends Activity {
     super.onResume();
     app.listener = this::render;
     render();
-    if (!form.visible()) app.sync();
+    if (pendingForm == null && !form.visible()) app.sync();
     handler.postDelayed(refresh, 60000);
   }
 
@@ -122,6 +132,12 @@ public final class MainActivity extends Activity {
   }
 
   @Override
+  protected void onDestroy() {
+    if (form != null) form.dismiss();
+    super.onDestroy();
+  }
+
+  @Override
   protected void onSaveInstanceState(Bundle out) {
     super.onSaveInstanceState(out);
     out.putInt("tab", tab);
@@ -130,7 +146,7 @@ public final class MainActivity extends Activity {
     out.putString("filter", filter);
     out.putString("query", query);
     out.putString("server", serverDraft);
-    Bundle draft = form.state();
+    Bundle draft = pendingForm == null ? form.state() : pendingForm;
     if (draft != null) out.putBundle("form", draft);
   }
 
@@ -987,6 +1003,8 @@ public final class MainActivity extends Activity {
       button.addView(ui.icon(ids[i], 24, false));
       TextView t = ui.text(names[i], 11, i == tab ? ui.accent : ui.muted, i == tab);
       t.setGravity(Gravity.CENTER);
+      t.setSingleLine();
+      t.setEllipsize(TextUtils.TruncateAt.END);
       ui.add(button, t);
       if (i == tab) button.setBackground(ui.shape(ui.soft, 22));
       button.setContentDescription(names[i]);

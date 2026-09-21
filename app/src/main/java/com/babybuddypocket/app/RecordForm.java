@@ -33,6 +33,10 @@ final class RecordForm {
     return dialog != null && dialog.isShowing();
   }
 
+  void dismiss() {
+    if (dialog != null) dialog.dismiss();
+  }
+
   Bundle state() {
     if (!visible()) return null;
     Bundle out = new Bundle();
@@ -110,8 +114,8 @@ final class RecordForm {
           ui.text(
               startingTimer
                   ? "Choose the options now. The timer is shared after syncing. Stop & save saves"
-                        + " your stop time offline too. The shared timer clears after the activity"
-                        + " syncs."
+                      + " your stop time offline too. The shared timer clears after the activity"
+                      + " syncs."
                   : "Enter start and end times for an earlier activity, or turn on the timer.",
               13,
               ui.muted,
@@ -262,44 +266,43 @@ final class RecordForm {
                 (startingTimer ? "Time " : timer == null ? "Log " : "Finish as ")
                     + Records.title(endpoint).toLowerCase(Locale.ROOT))
             .setView(scroll)
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton(
-                startingTimer ? "Start timer" : app.demo ? "Add sample" : "Save entry", null)
             .create();
-    dialog.setOnShowListener(
-        ignored ->
-            dialog
-                .getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(
-                    v -> {
-                      try {
-                        Map<String, String> values = new LinkedHashMap<>();
-                        readers.forEach((key, reader) -> values.put(key, reader.get()));
-                        if (startingTimer) {
-                          String now = Instant.now().toString();
-                          values.put("start", now);
-                          values.put("end", now);
-                        }
-                        JSONObject payload = FormValues.parse(schema, values, child, timer);
-                        if (startingTimer) app.startTimer(endpoint, payload);
-                        else if (localTimer != null) app.finishTimer(localTimer, payload);
-                        else app.add(endpoint, payload);
-                        app.activities().remember(endpoint, child, schema, values);
-                        dialog.dismiss();
-                        activity.logged();
-                        Toast.makeText(
-                                activity,
-                                startingTimer
-                                    ? (app.demo ? "Sample timer started" : "Timer start queued")
-                                    : app.demo ? "Sample added" : "Saved on this device",
-                                Toast.LENGTH_SHORT)
-                            .show();
-                      } catch (Exception e) {
-                        error.setText(SyncEngine.friendly(e));
-                        error.setVisibility(View.VISIBLE);
-                        scroll.post(() -> scroll.smoothScrollTo(0, content.getHeight()));
-                      }
-                    }));
+    ui.add(
+        content,
+        ui.button(
+            startingTimer ? "Start timer" : app.demo ? "Add sample" : "Save entry",
+            true,
+            () -> {
+              try {
+                Map<String, String> values = new LinkedHashMap<>();
+                readers.forEach((key, reader) -> values.put(key, reader.get()));
+                if (startingTimer) {
+                  String now = Instant.now().toString();
+                  values.put("start", now);
+                  values.put("end", now);
+                }
+                JSONObject payload = FormValues.parse(schema, values, child, timer);
+                if (startingTimer) app.startTimer(endpoint, payload);
+                else if (localTimer != null) app.finishTimer(localTimer, payload);
+                else app.add(endpoint, payload);
+                app.activities().remember(endpoint, child, schema, values);
+                dialog.dismiss();
+                activity.logged();
+                Toast.makeText(
+                        activity,
+                        startingTimer
+                            ? (app.demo ? "Sample timer started" : "Timer start queued")
+                            : app.demo ? "Sample added" : "Saved on this device",
+                        Toast.LENGTH_SHORT)
+                    .show();
+              } catch (Exception e) {
+                error.setText(SyncEngine.friendly(e));
+                error.setVisibility(View.VISIBLE);
+                scroll.post(() -> scroll.smoothScrollTo(0, error.getTop()));
+              }
+            }));
+    ui.gap(content, 8);
+    ui.add(content, ui.button("Cancel", false, () -> dialog.dismiss()));
     dialog.show();
     dialog.getWindow().setBackgroundDrawable(ui.shape(ui.surface, 24));
     dialog.getWindow().getDecorView().setClipToOutline(true);

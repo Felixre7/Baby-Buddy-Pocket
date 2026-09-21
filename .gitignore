@@ -2,6 +2,7 @@
 .gradle-home/
 **/build/
 *.apk
+*.apks
 *.aab
 *.apk.idsig
 *.ap_

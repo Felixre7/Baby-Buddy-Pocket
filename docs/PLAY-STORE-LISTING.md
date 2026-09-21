@@ -46,4 +46,4 @@ Show the real welcome screen with the server requirement visible. This requireme
 
 ## Publication notes
 
-The delivered APK remains a debug-signed sideload/testing build. This draft is not a Play Store submission. Prepare release signing and the actual store submission separately. Keep the public name distinct from the existing Android package identifier so the rename itself does not break updates.
+The delivered APK remains a debug-signed sideload/testing build. This draft is not a Play Store submission. See [release preparation](PLAY-RELEASE.md) for bundle signing, privacy/app-content declarations, and testing before submission. Preserve `com.babybuddypocket.app` for future updates.

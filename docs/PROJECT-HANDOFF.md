@@ -34,6 +34,8 @@ updated: 2026-09-21
 
 ## Important design choices
 
+> **0.1.11 compatibility work:** Added visible-touch regression checks and a broad Android-version/screen-size emulator matrix for Play preparation. Form actions scroll with their fields on small screens; navigation labels stay on one line. Restored form dialogs wait for the activity window to attach, fixing the older-Android rotation issue. See [compatibility evidence](COMPATIBILITY.md) and [Play preparation](PLAY-RELEASE.md). No new runtime dependency; minimum remains Android 8.0 / API 26.
+
 1. **Android only.** Build a native Android client for an existing Baby Buddy server. The user's Railway server is already working; server deployment is outside this app's scope.
 2. **Few dependencies and easy self-compilation.** The implementation direction is Java 17 with Android framework views, platform networking/JSON, SQLite, and Android Keystore. One standalone runtime library (ZXing core 3.5.4) supports QR decoding; no React Native, Expo, Firebase, or required developer service. JUnit and a JVM JSON implementation are test-only dependencies.
 3. **Calm, simple visual style.** Take inspiration from the user's existing LiftLog app and the Baby Buddy Companion iPhone screenshots: pale background, rounded white cards, readable typography, generous touch targets, and compact controls. Feedings are green, sleep is purple, diapers use warm neutral colors, and tummy time uses orange. Make an original Android interface; do not copy the other apps' code or assets.

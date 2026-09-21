@@ -2,7 +2,6 @@ package com.babybuddypocket.app;
 
 import android.app.*;
 import android.content.*;
-import android.content.pm.ActivityInfo;
 import android.graphics.Bitmap;
 import android.os.*;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -13,6 +12,7 @@ import org.json.*;
 /** Runs with the platform instrumentation API; no instrumentation libraries in the project. */
 public final class SmokeInstrumentation extends Instrumentation {
   private int assertions;
+  private boolean cleanTest;
   private String screenPrefix = "";
   private String upgradePhase = "", scanMode = "";
 
@@ -39,6 +39,12 @@ public final class SmokeInstrumentation extends Instrumentation {
       check(
           new Credentials(getTargetContext()).server().isEmpty(),
           "Use a clean emulator; refuses to change a connected app.");
+      cleanTest = true;
+      android.accessibilityservice.AccessibilityServiceInfo service =
+          getUiAutomation().getServiceInfo();
+      service.flags |=
+          android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
+      getUiAutomation().setServiceInfo(service);
       database();
       serverTimers();
       activityPreferences();
@@ -64,45 +70,45 @@ public final class SmokeInstrumentation extends Instrumentation {
       click("Try offline demo");
       pause();
       capture("02-today");
-      check(contains("Maya"), "Dashboard shows selected child");
-      check(contains("DEMO"), "Demo is labeled");
+      check(awaitText("Maya"), "Dashboard shows selected child");
+      check(awaitText("DEMO"), "Demo is labeled");
       click("Timeline");
       pause();
       capture("03-timeline");
-      check(contains("Search notes"), "Timeline has search");
+      check(awaitText("Search notes"), "Timeline has search");
       click("Trends");
       pause();
-      check(contains("past seven days"), "Trends visible");
+      check(awaitText("past seven days"), "Trends visible");
       capture("04-trends");
       click("Settings");
       pause();
-      check(contains("exploring the demo"), "Demo stays isolated");
+      check(awaitText("exploring the demo"), "Demo stays isolated");
       capture("05-settings");
       click("Today");
       pause();
       click("Log activity");
       pause();
-      check(contains("Choose your activities"), "Log activity opens the grid page");
+      check(awaitText("Choose your activities"), "Log activity opens the grid page");
       capture("06-activity-grid");
       click("Note");
       pause();
       setTextByHint("Required", "A sample note saved by the Android smoke test");
       capture("06-note-form");
       ActivityMonitor rotation = addMonitor("com.babybuddypocket.app.MainActivity", null, false);
-      runOnMainSync(
-          () -> activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE));
+      int originalRotation = activity.getWindowManager().getDefaultDisplay().getRotation();
+      check(getUiAutomation().setRotation((originalRotation + 1) % 4), "Device can rotate");
+      Activity rotated = waitForMonitorWithTimeout(rotation, 5000);
+      check(rotated != null, "Rotation recreates the activity");
       pause();
-      Activity rotated = rotation.getLastActivity();
       removeMonitor(rotation);
       capture("07-landscape");
-      check(contains("A sample note saved"), "Form draft survives rotation");
+      check(awaitText("A sample note saved"), "Form draft survives rotation");
       click("Add sample");
       pause();
       click("Timeline");
       pause();
-      check(contains("A sample note saved"), "Sample log appears in timeline");
-      runOnMainSync(
-          () -> rotated.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT));
+      check(awaitText("A sample note saved"), "Sample log appears in timeline");
+      check(getUiAutomation().setRotation(originalRotation), "Original device rotation restored");
       pause();
       timerFlow();
       customizationFlow();
@@ -116,7 +122,20 @@ public final class SmokeInstrumentation extends Instrumentation {
       finish(Activity.RESULT_OK, result);
     } catch (Throwable e) {
       try {
-        capture("failure");
+        if (cleanTest) {
+          capture("failure");
+          AccessibilityNodeInfo root = uiRoot();
+          try (PrintWriter output =
+              new PrintWriter(
+                  new File(
+                      getTargetContext().getExternalFilesDir(null),
+                      "screenshots/failure-hierarchy.txt"))) {
+            output.println("Root: " + root);
+            if (root != null
+                && getTargetContext().getPackageName().contentEquals(root.getPackageName()))
+              for (AccessibilityNodeInfo node : nodes(root)) output.println(node);
+          }
+        }
       } catch (Exception ignored) {
       }
       result.putString("stream", "\nFAIL: " + e + "\n" + android.util.Log.getStackTraceString(e));
@@ -451,12 +470,12 @@ public final class SmokeInstrumentation extends Instrumentation {
     capture("08-timer-default");
     click("Start a timer now");
     pause();
-    check(contains("Start") && contains("End"), "Manual time entry remains available");
+    check(awaitText("Start") && contains("End"), "Manual time entry remains available");
     click("Start a timer now");
     pause();
     click("Start timer");
     pause();
-    check(contains("Stop & save"), "Running timer has a direct dashboard stop");
+    check(awaitText("Stop & save"), "Running timer has a direct dashboard stop");
     capture("09-running-timer");
     AppController app = AppController.get(getTargetContext());
     check(app.timers().size() == 1, "Configured timer started");
@@ -467,7 +486,7 @@ public final class SmokeInstrumentation extends Instrumentation {
         });
     pause();
     pause();
-    check(contains("Stop & save"), "Hiding an activity cannot strand its running timer");
+    check(awaitText("Stop & save"), "Hiding an activity cannot strand its running timer");
     int before = app.data.getJSONArray("sleep").length();
     click("Stop & save");
     pause();
@@ -488,8 +507,7 @@ public final class SmokeInstrumentation extends Instrumentation {
     click("Tummy time");
     pause();
     check(!app.activities().visible("tummy-times"), "Settings checkbox hides an activity");
-    for (AccessibilityNodeInfo node :
-        getUiAutomation().getRootInActiveWindow().findAccessibilityNodeInfosByText("Tummy time"))
+    for (AccessibilityNodeInfo node : uiRoot().findAccessibilityNodeInfosByText("Tummy time"))
       node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId());
     pause();
     android.graphics.Rect label = bounds("Tummy time"),
@@ -532,12 +550,12 @@ public final class SmokeInstrumentation extends Instrumentation {
     pause();
     click("Feeding");
     pause();
-    check(contains("formula") && contains("bottle"), "Next form prefills last feeding choices");
+    check(awaitText("formula") && contains("bottle"), "Next form prefills last feeding choices");
     check(
         checked("Start a timer now") && !contains("End *"),
         "A new form returns to timer mode after a manual log");
     boolean freshAmount = false;
-    for (AccessibilityNodeInfo node : nodes(getUiAutomation().getRootInActiveWindow()))
+    for (AccessibilityNodeInfo node : nodes(uiRoot()))
       if ("Optional".contentEquals(String.valueOf(node.getHintText()))) {
         freshAmount =
             node.isShowingHintText() || node.getText() == null || node.getText().length() == 0;
@@ -591,7 +609,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       capture("12-sync-settings");
       click("Pending entries (1)");
       pause();
-      check(contains("Note · queued"), "Pending records remain reviewable from Settings");
+      check(awaitText("Note · queued"), "Pending records remain reviewable from Settings");
       click("Close");
       app.store.clear();
       app.data.getJSONObject("_schemas").put("timers", new JSONObject());
@@ -671,29 +689,30 @@ public final class SmokeInstrumentation extends Instrumentation {
     String server = "https://qr-test.example/api/";
     String token = "0123456789abcdef0123456789abcdef01234567";
     setTextByHint("https://your-server.up.railway.app", "https://manual.example");
-    ActivityMonitor scannerMonitor = addMonitor("com.babybuddypocket.app.QrScanActivity", null, false);
+    ActivityMonitor scannerMonitor =
+        addMonitor("com.babybuddypocket.app.QrScanActivity", null, false);
     click("Scan Baby Buddy QR code");
     waitForMonitorWithTimeout(scannerMonitor, 5000);
     removeMonitor(scannerMonitor);
     if (scanMode.equals("denied")) {
       boolean denied = false;
       for (int i = 0; i < 30 && !denied; i++) {
-        AccessibilityNodeInfo root = getUiAutomation().getRootInActiveWindow();
+        AccessibilityNodeInfo root = uiRoot();
         if (root != null)
           for (AccessibilityNodeInfo node : nodes(root)) {
             String label =
                 String.valueOf(node.getText()).replace('\u2019', '\'').toLowerCase(Locale.ROOT);
-            if (label.equals("don't allow"))
+            if (label.equals("don't allow") || label.equals("deny"))
               denied = node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
           }
         if (!denied) SystemClock.sleep(200);
       }
       check(denied, "Camera permission dialog can be declined");
       pause();
-      check(contains("Camera access is off"), "Permission refusal has a usable fallback");
+      check(awaitText("Camera access is off"), "Permission refusal has a usable fallback");
       click("Enter details manually");
       pause();
-      check(contains("https://manual.example"), "Cancel preserves manual URL");
+      check(awaitText("https://manual.example"), "Cancel preserves manual URL");
     } else {
       // The emulator camera displays a real encoded synthetic QR image; no injected scan result.
       for (int i = 0; i < 150 && !contains(server); i++) SystemClock.sleep(200);
@@ -854,11 +873,32 @@ public final class SmokeInstrumentation extends Instrumentation {
     waitForIdleSync();
   }
 
+  private AccessibilityNodeInfo uiRoot() {
+    AccessibilityNodeInfo active = getUiAutomation().getRootInActiveWindow();
+    if (active != null && active.refresh()) return active;
+    for (android.view.accessibility.AccessibilityWindowInfo window :
+        getUiAutomation().getWindows()) {
+      if (window.isFocused()) {
+        AccessibilityNodeInfo root = window.getRoot();
+        if (root != null && root.refresh()) return root;
+      }
+    }
+    return getUiAutomation().getRootInActiveWindow();
+  }
+
+  private boolean awaitText(String text) {
+    for (int attempt = 0; attempt < 25; attempt++) {
+      if (contains(text)) return true;
+      SystemClock.sleep(200);
+    }
+    return false;
+  }
+
   private boolean contains(String text) {
-    AccessibilityNodeInfo root = getUiAutomation().getRootInActiveWindow();
+    AccessibilityNodeInfo root = uiRoot();
     for (int i = 0; root == null && i < 25; i++) {
       SystemClock.sleep(200);
-      root = getUiAutomation().getRootInActiveWindow();
+      root = uiRoot();
     }
     if (root == null) return false;
     for (AccessibilityNodeInfo node : nodes(root))
@@ -869,14 +909,13 @@ public final class SmokeInstrumentation extends Instrumentation {
   }
 
   private boolean checked(String text) {
-    for (AccessibilityNodeInfo node :
-        getUiAutomation().getRootInActiveWindow().findAccessibilityNodeInfosByText(text))
+    for (AccessibilityNodeInfo node : uiRoot().findAccessibilityNodeInfosByText(text))
       if (node.isCheckable() && node.isChecked()) return true;
     return false;
   }
 
   private android.graphics.Rect bounds(String label) {
-    for (AccessibilityNodeInfo node : nodes(getUiAutomation().getRootInActiveWindow()))
+    for (AccessibilityNodeInfo node : nodes(uiRoot()))
       if (label.contentEquals(String.valueOf(node.getText()))
           || label.contentEquals(String.valueOf(node.getContentDescription()))) {
         android.graphics.Rect rect = new android.graphics.Rect();
@@ -897,36 +936,89 @@ public final class SmokeInstrumentation extends Instrumentation {
   }
 
   private void setTextByHint(String hint, String value) {
-    for (AccessibilityNodeInfo node : nodes(getUiAutomation().getRootInActiveWindow()))
-      if (hint.contentEquals(String.valueOf(node.getHintText()))) {
-        Bundle args = new Bundle();
-        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
-        if (node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return;
+    for (int attempt = 0; attempt < 25; attempt++) {
+      AccessibilityNodeInfo root = uiRoot();
+      if (root != null) {
+        for (AccessibilityNodeInfo node : nodes(root)) {
+          if (node.isEditable()
+              && (hint.contentEquals(String.valueOf(node.getHintText()))
+                  || hint.contentEquals(String.valueOf(node.getText())))) {
+            Bundle args = new Bundle();
+            args.putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
+            if (node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return;
+          }
+        }
       }
+      SystemClock.sleep(200);
+    }
     throw new AssertionError("No editable field: " + hint);
   }
 
   private void click(String text) {
-    AccessibilityNodeInfo root = getUiAutomation().getRootInActiveWindow();
-    for (int i = 0; root == null && i < 25; i++) {
-      SystemClock.sleep(200);
-      root = getUiAutomation().getRootInActiveWindow();
-    }
-    if (root == null) throw new AssertionError("No active window");
-    List<AccessibilityNodeInfo> matches = root.findAccessibilityNodeInfosByText(text);
-    matches.sort(
-        (a, b) ->
-            Boolean.compare(
-                !(text.contentEquals(String.valueOf(a.getText()))
-                    || text.contentEquals(String.valueOf(a.getContentDescription()))),
-                !(text.contentEquals(String.valueOf(b.getText()))
-                    || text.contentEquals(String.valueOf(b.getContentDescription())))));
-    for (AccessibilityNodeInfo match : matches) {
-      AccessibilityNodeInfo node = match;
-      while (node != null) {
-        if (node.isClickable() && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return;
-        node = node.getParent();
+    for (int attempt = 0; attempt < 25; attempt++) {
+      AccessibilityNodeInfo root = uiRoot();
+      if (root == null) {
+        SystemClock.sleep(200);
+        continue;
       }
+      List<AccessibilityNodeInfo> matches = root.findAccessibilityNodeInfosByText(text);
+      matches.sort(
+          (a, b) ->
+              Boolean.compare(
+                  !(text.contentEquals(String.valueOf(a.getText()))
+                      || text.contentEquals(String.valueOf(a.getContentDescription()))),
+                  !(text.contentEquals(String.valueOf(b.getText()))
+                      || text.contentEquals(String.valueOf(b.getContentDescription())))));
+      for (AccessibilityNodeInfo match : matches) {
+        AccessibilityNodeInfo node = match;
+        while (node != null) {
+          if (node.isClickable()) {
+            node.performAction(
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId());
+            pause();
+            node.refresh();
+            android.graphics.Rect hit = new android.graphics.Rect();
+            android.graphics.Rect window = new android.graphics.Rect();
+            node.getBoundsInScreen(hit);
+            uiRoot().getBoundsInScreen(window);
+            if (node.isVisibleToUser() && hit.intersect(window) && !hit.isEmpty()) {
+              long now = SystemClock.uptimeMillis();
+              android.view.MotionEvent down =
+                  android.view.MotionEvent.obtain(
+                      now,
+                      now,
+                      android.view.MotionEvent.ACTION_DOWN,
+                      hit.centerX(),
+                      hit.centerY(),
+                      0);
+              android.view.MotionEvent up =
+                  android.view.MotionEvent.obtain(
+                      now,
+                      now + 50,
+                      android.view.MotionEvent.ACTION_UP,
+                      hit.centerX(),
+                      hit.centerY(),
+                      0);
+              down.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+              up.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+              try {
+                check(
+                    getUiAutomation().injectInputEvent(down, true)
+                        && getUiAutomation().injectInputEvent(up, true),
+                    "Visible control accepts touch: " + text);
+              } finally {
+                down.recycle();
+                up.recycle();
+              }
+              waitForIdleSync();
+              return;
+            }
+          }
+          node = node.getParent();
+        }
+      }
+      SystemClock.sleep(200);
     }
     throw new AssertionError("No clickable control: " + text);
   }
