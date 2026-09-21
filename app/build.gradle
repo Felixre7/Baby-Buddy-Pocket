@@ -1,0 +1,30 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.babybuddypocket.app'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'com.babybuddypocket.app'
+        minSdk 26
+        targetSdk 36
+        versionCode 11
+        versionName '0.1.10'
+        testInstrumentationRunner project.findProperty('liveSyncTest') == 'true' ?
+            'com.babybuddypocket.app.LiveSyncInstrumentation' : 'com.babybuddypocket.app.SmokeInstrumentation'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    buildTypes {
+        release { minifyEnabled false }
+    }
+    lint { abortOnError true }
+}
+
+// One standalone runtime library for on-device QR decoding; no camera/UI framework.
+dependencies {
+    implementation 'com.google.zxing:core:3.5.4'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+}
