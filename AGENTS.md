@@ -13,6 +13,8 @@ The public app name is **Baby Buddy Pocket**. The Android identity is `com.babyb
 
 ## Changelog maintenance
 
+Keep proposals, brainstorming, idea generation, and research into undecided options in the Obsidian project, not in Git. Repository documentation should describe implemented behavior, verified results, and established build/release instructions. When discussing possible work, record it in Obsidian without creating or committing proposal documents in the repository.
+
 The user requested that the Obsidian changelog stay up to date whenever we make project changes.
 
 - Main note: the Obsidian project note with alias **Baby Buddy Pocket - Android app**.
