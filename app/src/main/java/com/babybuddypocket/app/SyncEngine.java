@@ -16,6 +16,11 @@ public final class SyncEngine {
 
     void accepted(long id, String endpoint, JSONObject record) throws Exception;
 
+    default boolean claim(long id) {
+      state(id, "review", "Delivery is uncertain. Check your server before retrying.");
+      return true;
+    }
+
     default void removed(long id, long timerId) throws Exception {
       throw new UnsupportedOperationException();
     }
@@ -23,8 +28,14 @@ public final class SyncEngine {
 
   private final Store store;
   private final ApiClient api;
+  private final DiagnosticLog diagnostics;
 
   public SyncEngine(Store store, ApiClient api) {
+    this(store, api, null);
+  }
+
+  SyncEngine(Store store, ApiClient api, DiagnosticLog diagnostics) {
+    this.diagnostics = diagnostics;
     this.store = store;
     this.api = api;
   }
@@ -54,7 +65,7 @@ public final class SyncEngine {
             store.state(
                 id,
                 "rejected",
-                "Activity is saved, but the timer was restarted or changed. Review it on the"
+                "The timer was restarted or changed. Review it on the"
                     + " server; it has not been removed.");
             continue;
           }
@@ -62,8 +73,7 @@ public final class SyncEngine {
           store.removed(id, item.getLong("cleanup_timer"));
         } catch (ApiClient.HttpFailure e) {
           if (e.status >= 400 && e.status < 500 && e.status != 408)
-            store.state(
-                id, "rejected", "Activity is saved; timer cleanup failed. " + e.getMessage());
+            store.state(id, "rejected", "Timer removal failed. " + e.getMessage());
           throw e;
         }
         continue;
@@ -93,22 +103,36 @@ public final class SyncEngine {
           throw e;
         }
       }
+      JSONObject payload = item.getJSONObject("payload");
+      if (endpoint.equals("timers") || Records.timed(endpoint)) {
+        JSONObject adjusted = api.timerTimes(payload, item.has("cleanup_timer"));
+        if (!adjusted.optString("start").equals(payload.optString("start"))
+            || !adjusted.optString("end").equals(payload.optString("end")))
+          log(DiagnosticLog.Event.TIMER_TIME_ADJUSTED, null);
+        payload = adjusted;
+      }
       // Persist before sending: a crash at any point now requires review rather than a duplicate
       // POST.
-      store.state(
-          id,
-          "review",
-          "Delivery is uncertain. Refresh the timeline and check your server before retrying.");
+      if (!store.claim(id)) continue;
       try {
-        JSONObject record = api.object("POST", endpoint + "/", item.getJSONObject("payload"));
+        JSONObject record = api.object("POST", endpoint + "/", payload);
         if (!record.has("id"))
           throw new IllegalStateException("The server did not return a record ID.");
         store.accepted(id, endpoint, record);
+        log(DiagnosticLog.Event.WRITE_ACCEPTED, null);
       } catch (ApiClient.HttpFailure e) {
         boolean rejected = e.status >= 400 && e.status < 500 && e.status != 408;
         store.state(id, rejected ? "rejected" : "review", e.getMessage());
+        log(
+            rejected
+                ? (endpoint.equals("timers")
+                    ? DiagnosticLog.Event.TIMER_START_REJECTED
+                    : DiagnosticLog.Event.WRITE_REJECTED)
+                : DiagnosticLog.Event.WRITE_UNCERTAIN,
+            e);
         if (e.status == 401 || e.status == 403) throw e;
       } catch (Exception e) {
+        log(DiagnosticLog.Event.WRITE_UNCERTAIN, e);
         store.state(
             id,
             "review",
@@ -138,6 +162,10 @@ public final class SyncEngine {
     fresh.put("_synced", System.currentTimeMillis());
     // Replace only after every supported collection and every page succeeded.
     store.replace(fresh);
+  }
+
+  private void log(DiagnosticLog.Event event, Exception failure) {
+    if (diagnostics != null) diagnostics.record(event, failure);
   }
 
   public static String friendly(Exception e) {

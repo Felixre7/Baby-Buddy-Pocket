@@ -16,19 +16,31 @@ public final class ApiClient {
 
   public static final class HttpFailure extends IOException {
     public final int status;
+    public final String fields;
 
     public HttpFailure(int status, String message) {
       super(message);
       this.status = status;
+      java.util.List<String> names = new java.util.ArrayList<>();
+      try {
+        int start = message.indexOf('{');
+        JSONObject errors = new JSONObject(message.substring(start));
+        for (String key :
+            new String[] {"child", "name", "start", "end", "user", "timer", "non_field_errors"})
+          if (errors.has(key)) names.add(key);
+      } catch (Exception ignored) {
+      }
+      fields = String.join(",", names);
     }
   }
 
   private final URI base;
   private final String token;
   private final Transport transport;
+  private long serverMillis, observedNanos;
 
   public ApiClient(String server, String token) {
-    this(server, token, ApiClient::http);
+    this(server, token, null);
   }
 
   public ApiClient(String server, String token, Transport transport) {
@@ -37,7 +49,7 @@ public final class ApiClient {
     if (this.token.isEmpty() || this.token.contains("\n") || this.token.contains("\r"))
       throw new IllegalArgumentException(
           "Enter a valid API token from Baby Buddy's user settings.");
-    this.transport = transport;
+    this.transport = transport == null ? this::http : transport;
   }
 
   public static URI normalize(String input) {
@@ -103,6 +115,37 @@ public final class ApiClient {
     }
   }
 
+  void observeServerDate(long millis) {
+    if (millis <= 0) return;
+    serverMillis = millis;
+    observedNanos = System.nanoTime();
+  }
+
+  JSONObject timerTimes(JSONObject payload, boolean sharedStart) throws Exception {
+    JSONObject result = Records.copy(payload);
+    if (serverMillis == 0 || !result.has("start")) return result;
+    // HTTP Date has one-second precision. Stay conservatively behind the server clock.
+    java.time.Instant latest =
+        java.time.Instant.ofEpochMilli(
+            serverMillis + (System.nanoTime() - observedNanos) / 1000000 - 1000);
+    java.time.Instant start = java.time.Instant.parse(result.getString("start"));
+    if (!result.has("end")) {
+      if (start.isAfter(latest)) result.put("start", latest.toString());
+    } else {
+      java.time.Instant end = java.time.Instant.parse(result.getString("end"));
+      if (end.isAfter(latest)) {
+        if (!sharedStart) {
+          // Keep the duration of an entirely offline session when the phone is ahead.
+          result.put("start", start.minus(java.time.Duration.between(latest, end)).toString());
+        } else if (latest.isBefore(start)) {
+          throw new java.io.IOException("Server time precedes the timer start. Try syncing later.");
+        }
+        result.put("end", latest.toString());
+      }
+    }
+    return result;
+  }
+
   public JSONArray list(String endpoint) throws Exception {
     JSONArray all = new JSONArray();
     String next = endpoint + "/?limit=200";
@@ -129,7 +172,7 @@ public final class ApiClient {
     return all;
   }
 
-  private static String http(String method, URI uri, String token, String body) throws Exception {
+  private String http(String method, URI uri, String token, String body) throws Exception {
     HttpURLConnection connection = (HttpURLConnection) uri.toURL().openConnection();
     try {
       connection.setInstanceFollowRedirects(false);
@@ -148,6 +191,7 @@ public final class ApiClient {
         }
       }
       int code = connection.getResponseCode();
+      observeServerDate(connection.getHeaderFieldDate("Date", 0));
       if (code >= 300 && code < 400)
         throw new HttpFailure(
             code, "The server redirected the API request. Use its final HTTPS address.");

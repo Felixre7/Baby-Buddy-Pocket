@@ -16,6 +16,7 @@ public final class AppController {
   }
 
   public final LocalStore store;
+  private final DiagnosticLog diagnostics;
   public final Credentials credentials;
   public final SharedPreferences preferences;
   private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -27,7 +28,10 @@ public final class AppController {
   private final List<JSONObject> demoTimers = new ArrayList<>();
 
   private AppController(Context context) {
+    diagnostics =
+        new DiagnosticLog(new java.io.File(context.getNoBackupFilesDir(), "diagnostics.json"));
     store = new LocalStore(context);
+    store.recoverRejectedTimers(true);
     credentials = new Credentials(context);
     preferences = context.getSharedPreferences("preferences", Context.MODE_PRIVATE);
     // 0.1.2's public demo is retired. Its existing demo flag now selects local sample data.
@@ -70,7 +74,7 @@ public final class AppController {
           try {
             ApiClient api = new ApiClient(server, token);
             MemoryStore staging = new MemoryStore();
-            new SyncEngine(staging, api).sync();
+            new SyncEngine(staging, api, diagnostics).sync();
             downloaded = staging.snapshot();
             // This flow is only accessible after a confirmed disconnect or from demo.
             store.clear();
@@ -78,6 +82,7 @@ public final class AppController {
             credentials.save(server, token);
           } catch (Exception e) {
             failure = e;
+            diagnostics.record(DiagnosticLog.Event.CONNECT_FAILED, e);
           }
           JSONObject snapshot = downloaded;
           Exception problem = failure;
@@ -103,15 +108,19 @@ public final class AppController {
         () -> {
           String failure = "";
           try {
-            new SyncEngine(store, new ApiClient(credentials.server(), credentials.token())).sync();
+            new SyncEngine(
+                    store, new ApiClient(credentials.server(), credentials.token()), diagnostics)
+                .sync();
           } catch (Exception e) {
             failure = SyncEngine.friendly(e);
+            diagnostics.record(DiagnosticLog.Event.SYNC_FAILED, e);
           }
           JSONObject downloaded = null;
           try {
             downloaded = store.snapshot();
           } catch (Exception e) {
             failure = SyncEngine.friendly(e);
+            diagnostics.record(DiagnosticLog.Event.SYNC_FAILED, e);
           }
           JSONObject snapshot = downloaded;
           String message = failure;
@@ -142,6 +151,7 @@ public final class AppController {
     if (busy) return;
     store.clear();
     credentials.clear();
+    worker.execute(diagnostics::clear);
     preferences.edit().clear().apply();
     demoTimers.clear();
     demo = false;
@@ -191,7 +201,8 @@ public final class AppController {
     if (!Records.timed(endpoint))
       throw new IllegalArgumentException("This activity cannot be timed.");
     for (JSONObject timer : timers())
-      if (!timer.has("finish_payload")
+      if (!timer.optBoolean("cancel_requested")
+          && !timer.has("finish_payload")
           && pending().stream()
               .noneMatch(
                   row ->
@@ -225,6 +236,7 @@ public final class AppController {
         throw new IllegalStateException(
             "Sync first and check that your account can create timers.");
       store.startTimer(endpoint, started);
+      log(DiagnosticLog.Event.TIMER_STARTED, null);
     }
     changed();
     sync();
@@ -244,14 +256,89 @@ public final class AppController {
           timer.getString("endpoint"),
           Records.copy(payload).put("timer", timer.getLong("server_id")));
       demoTimers.remove(timer);
-    } else store.finishTimer(id, payload);
+    } else {
+      store.finishTimer(id, payload);
+      log(DiagnosticLog.Event.TIMER_STOPPED, null);
+    }
     changed();
     sync();
   }
 
-  void discardTimer(long id) {
-    store.discardTimer(id);
+  void cancelTimer(long id) throws Exception {
+    if (demo) {
+      JSONObject local = timerOptions(id);
+      JSONArray shared = data.getJSONArray("timers"), remaining = new JSONArray();
+      for (int i = 0; i < shared.length(); i++)
+        if (shared.getJSONObject(i).getLong("id") != id) remaining.put(shared.getJSONObject(i));
+      data.put("timers", remaining);
+      if (local != null) demoTimers.remove(local);
+    } else store.cancelTimer(id);
+    log(DiagnosticLog.Event.TIMER_CANCELLED, null);
     changed();
+    sync();
+  }
+
+  void cancelSharedTimer(long id) throws Exception {
+    JSONObject local = timerOptions(id);
+    if (local != null) {
+      cancelTimer(local.getLong("id"));
+      return;
+    }
+    JSONArray shared = data.optJSONArray("timers");
+    if (shared != null)
+      for (int i = 0; i < shared.length(); i++) {
+        JSONObject timer = shared.getJSONObject(i);
+        if (timer.getLong("id") != id) continue;
+        store.queueTimerRemoval(
+            id, Records.copy(timer).put("child", timer.optLong("child", child())));
+        log(DiagnosticLog.Event.TIMER_CANCELLED, null);
+        changed();
+        sync();
+        return;
+      }
+    throw new IllegalArgumentException("This timer has already finished.");
+  }
+
+  void log(DiagnosticLog.Event event, Throwable failure) {
+    worker.execute(() -> diagnostics.record(event, failure));
+  }
+
+  void diagnosticReport(java.util.function.Consumer<String> callback) {
+    worker.execute(
+        () -> {
+          StringBuilder report = new StringBuilder(diagnostics.report());
+          try {
+            int queued = 0, rejected = 0, review = 0;
+            for (JSONObject row : store.pending()) {
+              switch (row.optString("state")) {
+                case "queued":
+                  queued++;
+                  break;
+                case "rejected":
+                  rejected++;
+                  break;
+                case "review":
+                  review++;
+                  break;
+              }
+            }
+            report
+                .append("\nPending: queued=")
+                .append(queued)
+                .append(", rejected=")
+                .append(rejected)
+                .append(", review=")
+                .append(review)
+                .append('\n');
+          } catch (Exception ignored) {
+            report.append("\nQueue counts unavailable.\n");
+          }
+          main.post(() -> callback.accept(report.toString()));
+        });
+  }
+
+  void clearDiagnostics() {
+    worker.execute(diagnostics::clear);
   }
 
   public void add(String endpoint, JSONObject payload) throws Exception {

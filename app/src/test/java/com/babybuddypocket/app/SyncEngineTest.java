@@ -237,4 +237,44 @@ public class SyncEngineTest {
     assertTrue(store.snapshot.has("notes"));
     assertEquals(0, store.snapshot.getJSONObject("_schemas").length());
   }
+
+  @Test
+  public void futureTimerStartUsesObservedServerClockBeforePost() throws Exception {
+    Store store = new Store();
+    java.time.Instant now = java.time.Instant.parse("2026-01-01T12:00:00Z");
+    store.pending.add(
+        new JSONObject()
+            .put("local_id", 1)
+            .put("endpoint", "timers")
+            .put("state", "queued")
+            .put(
+                "payload",
+                new JSONObject()
+                    .put("child", 1)
+                    .put("name", "Sleep")
+                    .put("start", now.plusSeconds(30).toString())));
+    ApiClient[] client = new ApiClient[1];
+    int[] posts = {0};
+    client[0] =
+        new ApiClient(
+            "https://example.invalid",
+            "synthetic",
+            (method, uri, token, body) -> {
+              client[0].observeServerDate(now.toEpochMilli());
+              if (method.equals("POST")) {
+                JSONObject payload = new JSONObject(body);
+                if (java.time.Instant.parse(payload.getString("start")).isAfter(now))
+                  throw new ApiClient.HttpFailure(
+                      400,
+                      "Server returned 400. {\"start\":[\"Date/time can not be in the future.\"]}");
+                posts[0]++;
+                return payload.put("id", 9).toString();
+              }
+              if (uri.getPath().equals("/api/")) return "{}";
+              return "[]";
+            });
+    new SyncEngine(store, client[0]).sync();
+    assertEquals(1, posts[0]);
+    assertTrue(store.pending.isEmpty());
+  }
 }

@@ -12,7 +12,7 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
   }
 
   LocalStore(Context context, String name) {
-    super(context, name, null, 3);
+    super(context, name, null, 4);
   }
 
   @Override
@@ -27,6 +27,9 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
 
   @Override
   public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+    if (oldVersion >= 2 && oldVersion < 4)
+      db.execSQL(
+          "ALTER TABLE active_timers ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0");
     if (oldVersion < 3) {
       db.execSQL("ALTER TABLE outbox ADD COLUMN method TEXT NOT NULL DEFAULT 'POST'");
       db.execSQL("ALTER TABLE outbox ADD COLUMN cleanup_timer INTEGER");
@@ -42,7 +45,8 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
   private void createTimers(SQLiteDatabase db) {
     db.execSQL(
         "CREATE TABLE active_timers (id INTEGER PRIMARY KEY AUTOINCREMENT, endpoint TEXT NOT NULL,"
-            + " payload TEXT NOT NULL, start_id INTEGER, server_id INTEGER, finish_payload TEXT)");
+            + " payload TEXT NOT NULL, start_id INTEGER, server_id INTEGER, finish_payload TEXT,"
+            + " cancel_requested INTEGER NOT NULL DEFAULT 0)");
   }
 
   synchronized void startTimer(String endpoint, JSONObject payload) throws Exception {
@@ -71,8 +75,8 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
     try (Cursor cursor =
         getReadableDatabase()
             .rawQuery(
-                "SELECT id,endpoint,payload,start_id,server_id,finish_payload FROM active_timers"
-                    + " ORDER BY id",
+                "SELECT id,endpoint,payload,start_id,server_id,finish_payload,cancel_requested FROM"
+                    + " active_timers ORDER BY id",
                 null)) {
       while (cursor.moveToNext())
         rows.add(
@@ -83,8 +87,8 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
                 .put("start_id", cursor.isNull(3) ? null : cursor.getLong(3))
                 .put("server_id", cursor.isNull(4) ? null : cursor.getLong(4))
                 .put(
-                    "finish_payload",
-                    cursor.isNull(5) ? null : new JSONObject(cursor.getString(5))));
+                    "finish_payload", cursor.isNull(5) ? null : new JSONObject(cursor.getString(5)))
+                .put("cancel_requested", cursor.getInt(6) != 0));
     } catch (JSONException e) {
       throw new IllegalStateException(e);
     }
@@ -104,9 +108,15 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
       if (timer == null) throw new IllegalArgumentException("This timer has already finished.");
       if (payload.getLong("child") != timer.getJSONObject("payload").getLong("child"))
         throw new IllegalArgumentException("The timer belongs to another child.");
+      if (timer.optBoolean("cancel_requested"))
+        throw new IllegalArgumentException("This timer has been cancelled.");
       JSONObject finished = Records.copy(payload);
       if (!finished.has("end")) finished.put("end", java.time.Instant.now().toString());
       if (!finished.has("start"))
+        finished.put("start", timer.getJSONObject("payload").getString("start"));
+      // The start response can arrive between rendering Stop and receiving its tap.
+      // Use the confirmed start, not the older value captured by that button/form.
+      if (timer.has("server_id"))
         finished.put("start", timer.getJSONObject("payload").getString("start"));
       FormValues.validateDuration(finished);
       if (timer.has("server_id")) {
@@ -115,17 +125,19 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
         consumedSetup.putNull("finish_payload");
         db.update("active_timers", consumedSetup, "id=?", new String[] {Long.toString(id)});
       } else if (timer.has("start_id")) {
-        if (timer.has("finish_payload"))
-          throw new IllegalArgumentException("This timer already has a pending finish.");
         boolean unsent = false;
         for (JSONObject row : pending())
           if (row.optLong("local_id") == timer.getLong("start_id"))
-            unsent = row.optString("state").equals("queued");
+            unsent =
+                row.optString("state").equals("queued")
+                    || row.optString("state").equals("rejected");
         if (unsent) {
           // A whole session completed before its start was sent: upload just the finished log.
           enqueue(timer.getString("endpoint"), finished);
           discard(timer.getLong("start_id"));
         } else {
+          if (timer.has("finish_payload"))
+            throw new IllegalArgumentException("This timer already has a pending finish.");
           ContentValues stop = new ContentValues();
           stop.put("finish_payload", finished.toString());
           db.update("active_timers", stop, "id=?", new String[] {Long.toString(id)});
@@ -134,6 +146,97 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
         enqueue(timer.getString("endpoint"), finished);
         discardTimer(id);
       }
+      db.setTransactionSuccessful();
+    } finally {
+      db.endTransaction();
+    }
+  }
+
+  // A definitely rejected start never created a server timer. Release a saved stop immediately.
+  synchronized void recoverRejectedTimers(boolean retryClock) {
+    try {
+      for (JSONObject timer : timers()) {
+        if (timer.has("server_id") || !timer.has("start_id")) continue;
+        for (JSONObject row : pending()) {
+          if (row.optLong("local_id") != timer.optLong("start_id")
+              || !row.optString("state").equals("rejected")) continue;
+          if (timer.optBoolean("cancel_requested")) discard(row.getLong("local_id"));
+          else if (timer.has("finish_payload"))
+            finishTimer(timer.getLong("id"), timer.getJSONObject("finish_payload"));
+          else if (retryClock
+              && row.optString("message").contains("Server returned 400")
+              && row.optString("message").contains("\"start\"")
+              && row.optString("message").contains("Date/time can not be in the future")) {
+            ContentValues retry = new ContentValues();
+            retry.put("state", "queued");
+            retry.put("message", "Waiting to sync with server time.");
+            getWritableDatabase()
+                .update(
+                    "outbox", retry, "id=?", new String[] {Long.toString(row.getLong("local_id"))});
+          }
+        }
+      }
+    } catch (Exception e) {
+      throw new IllegalStateException("Could not recover the saved timer", e);
+    }
+  }
+
+  synchronized void cancelTimer(long id) throws Exception {
+    SQLiteDatabase db = getWritableDatabase();
+    db.beginTransaction();
+    try {
+      JSONObject timer = null;
+      for (JSONObject row : timers()) if (row.getLong("id") == id) timer = row;
+      if (timer == null) throw new IllegalArgumentException("This timer has already finished.");
+      if (timer.optBoolean("cancel_requested")) return;
+      if (timer.has("finish_payload"))
+        throw new IllegalArgumentException(
+            "This timer already has a saved stop. Review it in Settings.");
+      if (timer.has("server_id")) {
+        queueTimerRemoval(timer.getLong("server_id"), timer.getJSONObject("payload"));
+      } else if (timer.has("start_id")) {
+        for (JSONObject row : pending())
+          if (row.getLong("local_id") == timer.getLong("start_id")
+              && (row.getString("state").equals("queued")
+                  || row.getString("state").equals("rejected"))) {
+            discard(row.getLong("local_id"));
+            db.setTransactionSuccessful();
+            return;
+          }
+      } else {
+        discardTimer(id);
+        db.setTransactionSuccessful();
+        return;
+      }
+      // Keep cancellation durable while a start may be in flight or its reply is unknown.
+      ContentValues values = new ContentValues();
+      values.put("cancel_requested", 1);
+      db.update("active_timers", values, "id=?", new String[] {Long.toString(id)});
+      db.setTransactionSuccessful();
+    } finally {
+      db.endTransaction();
+    }
+  }
+
+  synchronized void queueTimerRemoval(long serverId, JSONObject expected) throws Exception {
+    for (JSONObject row : pending())
+      if (row.optLong("cleanup_timer", -1) == serverId
+          || row.optJSONObject("payload").optLong("timer", -1) == serverId)
+        throw new IllegalArgumentException("This timer already has a pending action in Settings.");
+    SQLiteDatabase db = getWritableDatabase();
+    db.beginTransaction();
+    try {
+      long id =
+          enqueue(
+              "timers",
+              new JSONObject()
+                  .put("child", expected.getLong("child"))
+                  .put("start", expected.getString("start")));
+      ContentValues values = new ContentValues();
+      values.put("method", "DELETE");
+      values.put("cleanup_timer", serverId);
+      values.put("message", "Waiting to remove timer.");
+      db.update("outbox", values, "id=?", new String[] {Long.toString(id)});
       db.setTransactionSuccessful();
     } finally {
       db.endTransaction();
@@ -244,12 +347,30 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
   }
 
   @Override
-  public synchronized void state(long id, String state, String message) {
+  public synchronized boolean claim(long id) {
     ContentValues values = new ContentValues();
-    values.put("state", state);
-    values.put("message", message);
-    if (getWritableDatabase().update("outbox", values, "id=?", new String[] {Long.toString(id)})
-        != 1) throw new IllegalStateException("Pending entry disappeared");
+    values.put("state", "review");
+    values.put("message", "Delivery is uncertain. Check your server before retrying.");
+    return getWritableDatabase()
+            .update("outbox", values, "id=? AND state='queued'", new String[] {Long.toString(id)})
+        == 1;
+  }
+
+  @Override
+  public synchronized void state(long id, String state, String message) {
+    SQLiteDatabase db = getWritableDatabase();
+    db.beginTransaction();
+    try {
+      ContentValues values = new ContentValues();
+      values.put("state", state);
+      values.put("message", message);
+      if (db.update("outbox", values, "id=?", new String[] {Long.toString(id)}) != 1)
+        throw new IllegalStateException("Pending entry disappeared");
+      if (state.equals("rejected")) recoverRejectedTimers(false);
+      db.setTransactionSuccessful();
+    } finally {
+      db.endTransaction();
+    }
   }
 
   public synchronized void discard(long id) {
@@ -320,7 +441,9 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
                 normalized,
                 "id=?",
                 new String[] {Long.toString(timer.getLong("id"))});
-            if (timer.has("finish_payload"))
+            if (timer.optBoolean("cancel_requested"))
+              queueTimerRemoval(record.getLong("id"), options);
+            else if (timer.has("finish_payload"))
               finishTimer(
                   timer.getLong("id"),
                   timer.getJSONObject("finish_payload").put("start", record.getString("start")));

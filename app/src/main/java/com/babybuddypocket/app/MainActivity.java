@@ -314,6 +314,7 @@ public final class MainActivity extends Activity {
             false);
     footer.setGravity(Gravity.CENTER);
     ui.add(page, footer);
+    ui.add(page, ui.button("Report a problem", false, this::diagnostics));
   }
 
   private void header() {
@@ -468,108 +469,20 @@ public final class MainActivity extends Activity {
 
   private void timers() {
     for (JSONObject timer : app.timers()) {
-      if (timer.has("server_id")) continue;
+      if (timer.has("server_id")
+          || timer.has("finish_payload")
+          || timer.optBoolean("cancel_requested")) continue;
       JSONObject payload = timer.optJSONObject("payload");
       if (payload.optLong("child") != app.child()) continue;
-      if (timer.has("start_id")) {
-        String title =
-            Records.title(timer.optString("endpoint"))
-                + (timer.has("finish_payload")
-                    ? " · start and finish pending"
-                    : " · start pending");
-        LinearLayout pending =
-            timer.has("finish_payload")
-                ? ui.card(page, 20)
-                : timerCard(title, Records.time(payload));
-        if (timer.has("finish_payload")) ui.add(pending, ui.text(title, 16, ui.ink, true));
-        ui.add(
-            pending,
-            ui.text(
-                "Shared once the server confirms. Check Settings to sync or review this start.",
-                14,
-                ui.muted,
-                false));
-        if (!timer.has("finish_payload"))
-          ui.add(
-              pending,
-              ui.button(
-                  "Stop & save",
-                  true,
-                  () -> {
-                    try {
-                      app.finishTimer(timer.optLong("id"), payload);
-                    } catch (Exception e) {
-                      message("Could not save timer", SyncEngine.friendly(e));
-                    }
-                  }));
-        ui.add(pending, ui.button("Review in Settings", false, () -> navigate(3)));
-        continue;
-      }
-      String type = timer.optString("endpoint");
       LinearLayout card =
-          timerCard(Records.title(type) + " · on this phone", Records.time(payload));
-      long id = timer.optLong("id");
-      ui.add(
-          card,
-          ui.button(
-              "Stop & save",
-              true,
-              () -> {
-                try {
-                  JSONObject finished = Records.copy(payload).put("end", Instant.now().toString());
-                  FormValues.validateDuration(finished);
-                  app.finishTimer(id, finished);
-                  Toast.makeText(
-                          this,
-                          app.demo ? "Sample added" : "Saved on this device",
-                          Toast.LENGTH_SHORT)
-                      .show();
-                } catch (Exception e) {
-                  message(
-                      "Could not save timer",
-                      SyncEngine.friendly(e) + " Use Edit times to correct this timer.");
-                }
-              }));
-      ui.add(
-          card,
-          ui.button(
-              "Edit times",
-              false,
-              () -> {
-                Bundle draft = new Bundle();
-                draft.putLong("localTimer", id);
-                draft.putLong("child", payload.optLong("child"));
-                payload
-                    .keys()
-                    .forEachRemaining(
-                        key -> draft.putString("field:" + key, payload.optString(key)));
-                draft.putString("field:end", Instant.now().toString());
-                form.show(type, null, draft);
-              }));
-      ui.add(
-          card,
-          ui.button(
-              "Discard timer",
-              false,
-              () ->
-                  new AlertDialog.Builder(this)
-                      .setTitle("Discard this timer?")
-                      .setMessage("No activity will be saved.")
-                      .setNegativeButton("Keep timer", null)
-                      .setPositiveButton("Discard", (d, n) -> app.discardTimer(id))
-                      .show()));
+          timerCard(Records.title(timer.optString("endpoint")), Records.time(payload));
+      timerActions(card, timer, false);
     }
     JSONArray timers = app.data.optJSONArray("timers");
     if (timers == null) return;
     for (int i = 0; i < timers.length(); i++) {
       JSONObject timer = timers.optJSONObject(i);
       if (timer.optLong("child", app.child()) != app.child()) continue;
-      LinearLayout c =
-          timerCard(
-              Records.text(timer, "name").isEmpty()
-                  ? "Shared server timer"
-                  : Records.text(timer, "name"),
-              Records.time(timer));
       long serverId = timer.optLong("id");
       boolean pending =
           app.pending().stream()
@@ -578,43 +491,75 @@ public final class MainActivity extends Activity {
                       row.optLong(
                               "cleanup_timer", row.optJSONObject("payload").optLong("timer", -1))
                           == serverId);
-      ui.add(
-          c,
-          ui.text(
-              pending
-                  ? "Finish pending · saved on this phone. Sync in Settings to update the shared"
-                      + " timer."
-                  : "Shared timer · Stop & save also works offline.",
-              13,
-              ui.muted,
-              false));
-      if (pending) {
-        ui.add(c, ui.button("Review in Settings", false, () -> navigate(3)));
-        continue;
-      }
       JSONObject options = app.timerOptions(serverId);
+      if (pending || (options != null && options.optBoolean("cancel_requested"))) continue;
+      LinearLayout card =
+          timerCard(
+              Records.text(timer, "name").isEmpty() ? "Timer" : Records.text(timer, "name"),
+              Records.time(timer));
       if (options == null) {
-        ui.add(c, ui.button("Finish & log…", true, () -> chooseLog(serverId)));
-      } else {
-        ui.add(
-            c,
-            ui.button(
-                "Stop & save",
-                true,
-                () -> {
-                  try {
-                    app.finishTimer(options.optLong("id"), options.optJSONObject("payload"));
-                    Toast.makeText(
-                            this,
-                            app.demo ? "Sample added" : "Timer finish queued",
-                            Toast.LENGTH_SHORT)
-                        .show();
-                  } catch (Exception e) {
-                    message("Could not save timer", SyncEngine.friendly(e));
-                  }
-                }));
-      }
+        ui.add(card, ui.button("Finish & log…", true, () -> chooseLog(serverId)));
+        ui.add(card, ui.button("Cancel timer", false, () -> cancelTimer(serverId, true)));
+      } else timerActions(card, options, app.demo);
     }
+  }
+
+  private void timerActions(LinearLayout card, JSONObject timer, boolean demo) {
+    long id = timer.optLong("id");
+    JSONObject payload = timer.optJSONObject("payload");
+    ui.add(
+        card,
+        ui.button(
+            "Stop & save",
+            true,
+            () -> {
+              try {
+                app.finishTimer(id, Records.copy(payload).put("end", Instant.now().toString()));
+                Toast.makeText(
+                        this, demo ? "Sample added" : "Saved on this device", Toast.LENGTH_SHORT)
+                    .show();
+              } catch (Exception e) {
+                app.log(DiagnosticLog.Event.LOCAL_FAILURE, e);
+                message("Could not save timer", SyncEngine.friendly(e));
+              }
+            }));
+    ui.add(
+        card,
+        ui.button(
+            "Edit times",
+            false,
+            () -> {
+              Bundle draft = new Bundle();
+              draft.putLong("localTimer", id);
+              draft.putLong("child", payload.optLong("child"));
+              payload
+                  .keys()
+                  .forEachRemaining(key -> draft.putString("field:" + key, payload.optString(key)));
+              draft.putString("field:end", Instant.now().toString());
+              form.show(timer.optString("endpoint"), null, draft);
+            }));
+    ui.add(card, ui.button("Cancel timer", false, () -> cancelTimer(id, false)));
+  }
+
+  private void cancelTimer(long id, boolean shared) {
+    new AlertDialog.Builder(this)
+        .setTitle("Cancel this timer?")
+        .setMessage(
+            "No activity will be saved. A shared timer will be removed when syncing succeeds.")
+        .setNegativeButton("Keep timer", null)
+        .setPositiveButton(
+            "Cancel timer",
+            (dialog, which) -> {
+              try {
+                if (shared) app.cancelSharedTimer(id);
+                else app.cancelTimer(id);
+                Toast.makeText(this, "Timer cancelled on this device", Toast.LENGTH_SHORT).show();
+              } catch (Exception e) {
+                app.log(DiagnosticLog.Event.LOCAL_FAILURE, e);
+                message("Could not cancel timer", SyncEngine.friendly(e));
+              }
+            })
+        .show();
   }
 
   private LinearLayout timerCard(String title, Instant start) {
@@ -904,6 +849,7 @@ public final class MainActivity extends Activity {
           connection,
           ui.button("Pending entries (" + app.pending().size() + ")", false, this::pending));
     }
+    ui.add(page, ui.button("Report a problem", false, this::diagnostics));
     ui.section(page, "MEASUREMENT LABELS");
     LinearLayout units = ui.card(page, 18);
     ui.add(
@@ -1202,6 +1148,120 @@ public final class MainActivity extends Activity {
         .show();
   }
 
+  private void diagnostics() {
+    String version;
+    try {
+      android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+      version = info.versionName + " (" + info.versionCode + ")";
+    } catch (Exception e) {
+      version = "unknown";
+    }
+    android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
+    String header =
+        "Baby Buddy Pocket "
+            + version
+            + "\nAndroid "
+            + Build.VERSION.RELEASE
+            + " / API "
+            + Build.VERSION.SDK_INT
+            + "\nDevice: "
+            + Build.MANUFACTURER
+            + " "
+            + Build.MODEL
+            + "\nDisplay: "
+            + metrics.widthPixels
+            + "x"
+            + metrics.heightPixels
+            + " / "
+            + metrics.densityDpi
+            + " dpi; font "
+            + getResources().getConfiguration().fontScale
+            + "; dark="
+            + ui.dark
+            + "\n\n";
+    app.diagnosticReport(
+        body -> {
+          if (isFinishing() || isDestroyed()) return;
+          String report = header + body;
+          LinearLayout content = ui.column();
+          content.setPadding(ui.dp(20), ui.dp(12), ui.dp(20), ui.dp(16));
+          ui.add(
+              content,
+              ui.text(
+                  "Technical details stay on this phone until you share them. Review below. Include"
+                      + " what you expected and the steps that caused the problem. GitHub issues"
+                      + " are public.",
+                  14));
+          TextView text = ui.text(report, 12);
+          text.setTextIsSelectable(true);
+          ui.add(content, text);
+          ui.add(
+              content,
+              ui.button(
+                  "Copy report",
+                  true,
+                  () -> {
+                    ((android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE))
+                        .setPrimaryClip(
+                            ClipData.newPlainText("Baby Buddy Pocket diagnostics", report));
+                    Toast.makeText(this, "Report copied", Toast.LENGTH_SHORT).show();
+                  }));
+          ui.add(
+              content,
+              ui.button(
+                  "Share report",
+                  false,
+                  () -> {
+                    Intent send =
+                        new Intent(Intent.ACTION_SEND)
+                            .setType("text/plain")
+                            .putExtra(Intent.EXTRA_SUBJECT, "Baby Buddy Pocket problem report")
+                            .putExtra(Intent.EXTRA_TEXT, report);
+                    try {
+                      startActivity(Intent.createChooser(send, "Share report"));
+                    } catch (ActivityNotFoundException e) {
+                      message("No sharing app", "Use Copy report instead.");
+                    }
+                  }));
+          ui.add(
+              content,
+              ui.button(
+                  "Open GitHub issues",
+                  false,
+                  () -> {
+                    try {
+                      startActivity(
+                          new Intent(
+                              Intent.ACTION_VIEW,
+                              android.net.Uri.parse(
+                                  "https://github.com/Felixre7/Baby-Buddy-Pocket/issues")));
+                    } catch (ActivityNotFoundException e) {
+                      message(
+                          "No browser",
+                          "Visit github.com/Felixre7/Baby-Buddy-Pocket/issues in a browser.");
+                    }
+                  }));
+          ScrollView reportScroll = new ScrollView(this);
+          reportScroll.addView(content);
+          AlertDialog dialog =
+              new AlertDialog.Builder(this)
+                  .setTitle("Report a problem")
+                  .setView(reportScroll)
+                  .create();
+          ui.add(
+              content,
+              ui.button(
+                  "Clear diagnostics",
+                  false,
+                  () -> {
+                    app.clearDiagnostics();
+                    dialog.dismiss();
+                  }));
+          ui.add(content, ui.button("Close report", false, dialog::dismiss));
+          dialog.show();
+        });
+  }
+
   private void pending() {
     List<JSONObject> rows = app.pending();
     if (rows.isEmpty()) {
@@ -1217,7 +1277,7 @@ public final class MainActivity extends Activity {
               + " · "
               + rows.get(i).optString("state");
     new AlertDialog.Builder(this)
-        .setTitle("Pending entries")
+        .setTitle("Pending entries · tap for details")
         .setItems(names, (d, n) -> pendingDetail(rows.get(n)))
         .setNegativeButton("Close", null)
         .show();
@@ -1234,8 +1294,8 @@ public final class MainActivity extends Activity {
             + Records.summary(payload, app.units())
             + "\n\n"
             + (cleanup
-                ? "The activity is already saved. Retrying only removes its shared timer and is"
-                    + " safe. Discard leaves that timer on the server."
+                ? "Retrying only removes this timer. Discard leaves the timer on the server;"
+                    + " any already saved activity is kept."
                 : "Retrying an entry that reached the server can create a duplicate. Check the"
                     + " timeline or your server first. Discard removes only this device's pending"
                     + " copy.");
@@ -1249,7 +1309,7 @@ public final class MainActivity extends Activity {
                     .setTitle("Retry this entry?")
                     .setMessage(
                         cleanup
-                            ? "Retry removing this timer? Its activity is already saved."
+                            ? "Retry removing this timer? Any already saved activity is kept."
                             : "Confirm that the entry is missing from your server. If it is already"
                                 + " there, discard the pending copy instead.")
                     .setPositiveButton(

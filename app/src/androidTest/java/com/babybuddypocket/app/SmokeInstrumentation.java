@@ -47,6 +47,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       getUiAutomation().setServiceInfo(service);
       database();
       serverTimers();
+      rejectedTimersAndCancellation();
       activityPreferences();
       credentials();
       getTargetContext()
@@ -112,6 +113,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       pause();
       timerFlow();
       customizationFlow();
+      diagnosticsFlow();
       syncPresentation();
       result.putString(
           "stream",
@@ -369,6 +371,152 @@ public final class SmokeInstrumentation extends Instrumentation {
     getTargetContext().deleteDatabase(name);
   }
 
+  private void rejectedTimersAndCancellation() throws Exception {
+    String name = "rejected-timer-test.db";
+    getTargetContext().deleteDatabase(name);
+    LocalStore store = new LocalStore(getTargetContext(), name);
+    JSONObject payload =
+        new JSONObject()
+            .put("child", 1)
+            .put("nap", false)
+            .put("start", "2026-01-01T01:00:00Z")
+            .put("end", "2026-01-01T02:00:00Z");
+    String rejection = "Server returned 400. {\"start\":[\"Date/time can not be in the future.\"]}";
+    store.startTimer("sleep", payload);
+    long id = store.timers().get(0).getLong("id"),
+        startId = store.pending().get(0).getLong("local_id");
+    store.state(startId, "rejected", rejection);
+    store.finishTimer(id, payload);
+    check(
+        store.timers().isEmpty()
+            && store.pending().size() == 1
+            && store.pending().get(0).getString("endpoint").equals("sleep"),
+        "Rejected start does not block a finished log");
+    store.clear();
+    store.startTimer("sleep", payload);
+    id = store.timers().get(0).getLong("id");
+    startId = store.pending().get(0).getLong("local_id");
+    store.state(startId, "review", "In flight");
+    store.finishTimer(id, payload);
+    store.state(startId, "rejected", rejection);
+    check(
+        store.timers().isEmpty() && store.pending().get(0).getString("endpoint").equals("sleep"),
+        "Rejection arriving after stop releases the finished log transactionally");
+    store.clear();
+    store.startTimer("sleep", payload);
+    startId = store.pending().get(0).getLong("local_id");
+    store.state(startId, "rejected", rejection);
+    store.close();
+    store = new LocalStore(getTargetContext(), name);
+    store.recoverRejectedTimers(true);
+    check(
+        store.pending().get(0).getString("state").equals("queued"),
+        "Prior definite clock rejection recovers after restart");
+    id = store.timers().get(0).getLong("id");
+    store.cancelTimer(id);
+    check(
+        store.timers().isEmpty() && store.pending().isEmpty(),
+        "Cancelling unsent timer cannot publish it later");
+
+    TimerServer server = new TimerServer();
+    ApiClient api = new ApiClient("https://timers.invalid", "synthetic", server);
+    store.startTimer("sleep", payload);
+    id = store.timers().get(0).getLong("id");
+    startId = store.pending().get(0).getLong("local_id");
+    store.state(startId, "review", "In flight");
+    store.cancelTimer(id);
+    store.close();
+    store = new LocalStore(getTargetContext(), name);
+    check(
+        store.timers().get(0).optBoolean("cancel_requested"),
+        "In-flight cancellation survives restart");
+    new SyncEngine(store, api).sync();
+    check(
+        server.starts == 0 && store.pending().get(0).getString("state").equals("review"),
+        "Cancelled ambiguous start is not blindly retried");
+    JSONObject confirmed =
+        new JSONObject().put("id", 100).put("child", 1).put("start", payload.getString("start"));
+    server.timers.put(confirmed);
+    store.accepted(startId, "timers", confirmed);
+    check(
+        store.pending().size() == 1 && store.pending().get(0).getString("method").equals("DELETE"),
+        "Late start confirmation queues cancellation without an activity");
+    new SyncEngine(store, api).sync();
+    check(
+        store.pending().isEmpty() && store.timers().isEmpty() && server.finishes == 0,
+        "Confirmed cancellation removes only the shared timer");
+    store.startTimer("sleep", payload);
+    id = store.timers().get(0).getLong("id");
+    new SyncEngine(store, api).sync();
+    store.cancelTimer(id);
+    new SyncEngine(store, api).sync();
+    check(
+        server.timers.length() == 0 && server.finishes == 0,
+        "Normal shared cancellation never creates an activity");
+    store.clear();
+    store.startTimer("sleep", payload);
+    id = store.timers().get(0).getLong("id");
+    startId = store.pending().get(0).getLong("local_id");
+    JSONObject adjustedStart =
+        new JSONObject().put("id", 200).put("child", 1).put("start", "2026-01-01T00:59:30Z");
+    store.accepted(startId, "timers", adjustedStart);
+    store.finishTimer(id, payload);
+    check(
+        store
+            .pending()
+            .get(0)
+            .getJSONObject("payload")
+            .getString("start")
+            .equals(adjustedStart.getString("start")),
+        "Stop rendered before confirmation uses the latest confirmed server start");
+    store.clear();
+    store.startTimer("sleep", payload);
+    id = store.timers().get(0).getLong("id");
+    startId = store.pending().get(0).getLong("local_id");
+    store.cancelTimer(id);
+    check(!store.claim(startId), "Cancelled start cannot be claimed from an old sync snapshot");
+    store.clear();
+    store.close();
+    getTargetContext().deleteDatabase(name);
+    android.database.sqlite.SQLiteDatabase old =
+        android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(
+            getTargetContext().getDatabasePath(name), null);
+    old.execSQL("CREATE TABLE cache (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL)");
+    old.execSQL(
+        "CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, endpoint TEXT NOT NULL, payload"
+            + " TEXT NOT NULL, state TEXT NOT NULL, message TEXT NOT NULL, method TEXT NOT NULL"
+            + " DEFAULT 'POST', cleanup_timer INTEGER)");
+    old.execSQL(
+        "CREATE TABLE active_timers (id INTEGER PRIMARY KEY AUTOINCREMENT, endpoint TEXT NOT NULL,"
+            + " payload TEXT NOT NULL, start_id INTEGER, server_id INTEGER, finish_payload TEXT)");
+    old.execSQL(
+        "INSERT INTO outbox(id,endpoint,payload,state,message) VALUES(1,'timers',?,'rejected',?)",
+        new Object[] {payload.toString(), rejection});
+    old.execSQL(
+        "INSERT INTO active_timers(endpoint,payload,start_id,finish_payload) VALUES('sleep',?,1,?)",
+        new Object[] {payload.toString(), payload.toString()});
+    old.setVersion(3);
+    old.close();
+    store = new LocalStore(getTargetContext(), name);
+    store.recoverRejectedTimers(true);
+    check(
+        store.timers().isEmpty()
+            && store.pending().size() == 1
+            && store.pending().get(0).getString("endpoint").equals("sleep"),
+        "Version 3 stuck stop migrates into a completed log without losing its payload");
+    check(
+        store
+            .pending()
+            .get(0)
+            .getJSONObject("payload")
+            .getString("end")
+            .equals(payload.getString("end")),
+        "Upgrade recovery preserves the original stop time");
+    store.clear();
+    store.close();
+    getTargetContext().deleteDatabase(name);
+  }
+
   /** API fixture enforces non-overlapping sessions and the 24-hour duration limit. No network. */
   private static final class TimerServer implements ApiClient.Transport {
     boolean offline, loseStartReply, loseDeleteReply;
@@ -495,6 +643,17 @@ public final class SmokeInstrumentation extends Instrumentation {
         app.data.getJSONArray("sleep").length() == before + 1,
         "One tap also saves exactly one activity");
     runOnMainSync(() -> app.activities().visible("sleep", true));
+    click("Log activity");
+    click("Sleep");
+    click("Start timer");
+    click("Cancel timer");
+    click("Cancel timer");
+    check(
+        !contains("Stop & save") && app.timers().isEmpty(),
+        "Cancel button removes running demo timer");
+    check(
+        app.data.getJSONArray("sleep").length() == before + 1,
+        "Cancel button does not save an activity");
   }
 
   private void customizationFlow() throws Exception {
@@ -573,6 +732,45 @@ public final class SmokeInstrumentation extends Instrumentation {
         "System Back returns from grid without closing the app");
   }
 
+  private void diagnosticsFlow() throws Exception {
+    AppController app = AppController.get(getTargetContext());
+    app.log(
+        DiagnosticLog.Event.TIMER_START_REJECTED,
+        new ApiClient.HttpFailure(
+            400, "Server returned 400. {\"start\":[\"synthetic-secret private-record\"]}"));
+    click("Settings");
+    click("Report a problem");
+    check(awaitText("HTTP 400 fields=start"), "Support report keeps useful HTTP fields");
+    check(
+        !contains("synthetic-secret") && !contains("private-record"),
+        "Report excludes response contents");
+    capture("17-diagnostics");
+    click("Copy report");
+    check(awaitText("Recent technical events"), "Copy leaves report available");
+    String[] copied = {""};
+    runOnMainSync(
+        () -> {
+          android.content.ClipboardManager clipboard =
+              (android.content.ClipboardManager)
+                  getTargetContext().getSystemService(Context.CLIPBOARD_SERVICE);
+          copied[0] =
+              clipboard.getPrimaryClip().getItemAt(0).coerceToText(getTargetContext()).toString();
+        });
+    check(
+        copied[0].contains("HTTP 400 fields=start") && !copied[0].contains("synthetic-secret"),
+        "Copied report keeps sanitized details");
+    // Android's temporary clipboard preview covers lower controls on small screens.
+    // Let it dismiss before testing a real touch on Share (rather than its overlay).
+    if (android.os.Build.VERSION.SDK_INT >= 33) SystemClock.sleep(8000);
+    ActivityMonitor share =
+        addMonitor(new IntentFilter(Intent.ACTION_CHOOSER), new ActivityResult(0, null), true);
+    click("Share report");
+    check(share.getHits() == 1, "Share opens system chooser without sending automatically");
+    removeMonitor(share);
+    click("Close report");
+    click("Today");
+  }
+
   private void syncPresentation() throws Exception {
     AppController app = AppController.get(getTargetContext());
     app.credentials.save("https://sync-test.invalid", "synthetic-sync-token");
@@ -629,7 +827,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       click("Today");
       pause();
       check(
-          contains("start pending") && contains("Stop & save"),
+          contains("Cancel timer") && contains("Stop & save") && !contains("start pending"),
           "Offline start is visible and can be stopped immediately");
       capture("13-offline-start");
       click("Stop & save");
@@ -662,14 +860,14 @@ public final class SmokeInstrumentation extends Instrumentation {
           });
       pause();
       check(
-          contains("Shared timer") && contains("Stop & save"),
+          contains("Cancel timer") && contains("Stop & save"),
           "Confirmed shared timer keeps one-tap configured stop");
       capture("15-shared-timer");
       click("Stop & save");
       pause();
       check(
-          contains("Finish pending") && !contains("Stop & save"),
-          "Offline shared stop shows pending state and blocks repeat taps");
+          !contains("Finish pending") && !contains("Stop & save") && !app.store.pending().isEmpty(),
+          "Offline shared stop leaves Today and stays durable in Settings");
       capture("16-shared-finish-pending");
       new SyncEngine(app.store, api).sync();
       new SyncEngine(app.store, api).sync();

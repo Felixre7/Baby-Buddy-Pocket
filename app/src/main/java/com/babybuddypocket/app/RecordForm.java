@@ -113,9 +113,7 @@ final class RecordForm {
           content,
           ui.text(
               startingTimer
-                  ? "Choose the options now. The timer is shared after syncing. Stop & save saves"
-                      + " your stop time offline too. The shared timer clears after the activity"
-                      + " syncs."
+                  ? "Choose your options, then start. Stop & save works offline too."
                   : "Enter start and end times for an earlier activity, or turn on the timer.",
               13,
               ui.muted,
@@ -291,11 +289,12 @@ final class RecordForm {
                 Toast.makeText(
                         activity,
                         startingTimer
-                            ? (app.demo ? "Sample timer started" : "Timer start queued")
+                            ? (app.demo ? "Sample timer started" : "Timer started")
                             : app.demo ? "Sample added" : "Saved on this device",
                         Toast.LENGTH_SHORT)
                     .show();
               } catch (Exception e) {
+                app.log(DiagnosticLog.Event.LOCAL_FAILURE, e);
                 error.setText(SyncEngine.friendly(e));
                 error.setVisibility(View.VISIBLE);
                 scroll.post(() -> scroll.smoothScrollTo(0, error.getTop()));
