@@ -154,7 +154,8 @@ final class RecordForm {
               field.optString("label", key.replace('_', ' '))
                   + app.units().label(endpoint, key)
                   + (FormValues.required(schema, key) ? " *" : "");
-      ui.add(content, ui.text(label, 13, ui.muted, true));
+      TextView fieldLabel = ui.text(label, 13, ui.muted, true);
+      ui.add(content, fieldLabel);
       ui.gap(content, 6);
       String initial =
           restored == null ? defaults.optString(key, "") : restored.getString("field:" + key, "");
@@ -169,20 +170,16 @@ final class RecordForm {
             labels.add(choice.optString("display_name"));
             values.add(choice.optString("value"));
           }
-        Spinner spinner = new Spinner(activity);
-        spinner.setMinimumHeight(ui.dp(48));
-        spinner.setAdapter(
-            new ArrayAdapter<>(activity, android.R.layout.simple_spinner_dropdown_item, labels));
-        spinner.setSelection(Math.max(0, values.indexOf(initial)));
+        Spinner spinner = ui.choice(fieldLabel, labels, Math.max(0, values.indexOf(initial)));
         ui.add(content, spinner);
         readers.put(key, () -> values.get(spinner.getSelectedItemPosition()));
       } else if (type.equals("boolean")) {
-        Spinner spinner = new Spinner(activity);
         String[] options = {field.optBoolean("required") ? "Choose…" : "Automatic", "Yes", "No"};
-        spinner.setMinimumHeight(ui.dp(48));
-        spinner.setAdapter(
-            new ArrayAdapter<>(activity, android.R.layout.simple_spinner_dropdown_item, options));
-        spinner.setSelection(initial.equals("true") ? 1 : initial.equals("false") ? 2 : 0);
+        Spinner spinner =
+            ui.choice(
+                fieldLabel,
+                Arrays.asList(options),
+                initial.equals("true") ? 1 : initial.equals("false") ? 2 : 0);
         ui.add(content, spinner);
         readers.put(
             key,

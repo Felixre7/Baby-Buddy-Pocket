@@ -7,6 +7,7 @@ import android.graphics.*;
 import android.graphics.drawable.*;
 import android.view.*;
 import android.widget.*;
+import java.util.List;
 
 /** Small platform-view toolkit. No font downloads, icon packages or UI dependencies. */
 final class Ui {
@@ -129,6 +130,77 @@ final class Ui {
     bg.setStroke(dp(1), line);
     edit.setBackground(bg);
     return edit;
+  }
+
+  Spinner choice(TextView label, List<String> choices, int selected) {
+    Spinner spinner = new Spinner(activity, Spinner.MODE_DROPDOWN);
+    spinner.setId(View.generateViewId());
+    label.setLabelFor(spinner.getId());
+    spinner.setMinimumHeight(dp(52));
+    GradientDrawable normal = shape(background, 14), focused = shape(background, 14);
+    normal.setStroke(dp(1), line);
+    focused.setStroke(dp(1), accent);
+    StateListDrawable border = new StateListDrawable();
+    border.addState(new int[] {android.R.attr.state_focused}, focused);
+    border.addState(new int[] {android.R.attr.state_pressed}, focused);
+    border.addState(new int[] {}, normal);
+    spinner.setBackground(border);
+    spinner.setBackgroundTintList(null);
+    spinner.setPadding(0, 0, 0, 0);
+    LayerDrawable popup = new LayerDrawable(new Drawable[] {shape(surface, 18)});
+    popup.setPadding(dp(6), dp(6), dp(6), dp(6));
+    spinner.setPopupBackgroundDrawable(popup);
+    spinner.setDropDownWidth(ViewGroup.LayoutParams.MATCH_PARENT);
+    spinner.setDropDownVerticalOffset(dp(6));
+    spinner.setAdapter(
+        new ArrayAdapter<String>(activity, android.R.layout.simple_spinner_item, choices) {
+          @Override
+          public View getView(int position, View recycled, ViewGroup parent) {
+            TextView value = recycled instanceof TextView ? (TextView) recycled : text("", 16);
+            value.setText(getItem(position));
+            value.setTextColor("Choose…".equals(getItem(position)) ? muted : ink);
+            value.setGravity(Gravity.CENTER_VERTICAL);
+            value.setMinHeight(dp(52));
+            value.setPaddingRelative(dp(14), dp(12), dp(14), dp(12));
+            Drawable arrow = activity.getDrawable(R.drawable.ic_dropdown_arrow).mutate();
+            arrow.setTint(muted);
+            value.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, arrow, null);
+            value.setCompoundDrawablePadding(dp(12));
+            return value;
+          }
+
+          @Override
+          public View getDropDownView(int position, View recycled, ViewGroup parent) {
+            CheckedTextView row =
+                recycled instanceof CheckedTextView
+                    ? (CheckedTextView) recycled
+                    : new CheckedTextView(activity) {
+                      @Override
+                      public void setHorizontallyScrolling(boolean enabled) {
+                        // Android's dropdown list forces this on after binding each text row.
+                        super.setHorizontallyScrolling(false);
+                      }
+                    };
+            boolean chosen = position == spinner.getSelectedItemPosition();
+            row.setText(getItem(position));
+            row.setTextSize(16);
+            row.setTextColor(chosen ? accent : ink);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setSingleLine(false);
+            row.setPaddingRelative(dp(12), dp(12), dp(12), dp(12));
+            row.setBackground(shape(chosen ? soft : surface, 12));
+            row.setCheckMarkDrawable(R.drawable.ic_choice_check);
+            row.setMinHeight(dp(48));
+            row.setCheckMarkTintList(
+                new ColorStateList(
+                    new int[][] {{android.R.attr.state_checked}, {}},
+                    new int[] {accent, Color.TRANSPARENT}));
+            row.setChecked(chosen);
+            return row;
+          }
+        });
+    spinner.setSelection(selected);
+    return spinner;
   }
 
   void section(LinearLayout parent, String label) {

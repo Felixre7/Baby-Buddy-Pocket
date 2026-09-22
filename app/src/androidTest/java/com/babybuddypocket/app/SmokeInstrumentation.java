@@ -118,6 +118,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       timerFlow();
       timerConflictFlow();
       customizationFlow();
+      booleanChoices();
       diagnosticsFlow();
       syncPresentation();
       rejectionPresentation();
@@ -1078,6 +1079,33 @@ public final class SmokeInstrumentation extends Instrumentation {
       }
     check(freshAmount, "Next feeding amount starts blank");
     capture("11-remembered-choices");
+    click("formula");
+    pause();
+    check(checked("formula"), "Open choice menu marks the current value as checked");
+    readableChoice("fortified breast milk");
+    capture("25-choice-menu");
+    click("fortified breast milk");
+    pause();
+    ActivityMonitor rotation = addMonitor("com.babybuddypocket.app.MainActivity", null, false);
+    int originalRotation =
+        ((android.view.WindowManager) getTargetContext().getSystemService(Context.WINDOW_SERVICE))
+            .getDefaultDisplay()
+            .getRotation();
+    check(getUiAutomation().setRotation((originalRotation + 1) % 4), "Choice form can rotate");
+    check(waitForMonitorWithTimeout(rotation, 5000) != null, "Choice form activity recreated");
+    removeMonitor(rotation);
+    pause();
+    check(
+        awaitText("fortified breast milk") && contains("bottle"),
+        "Unsaved choice survives rotation independently of remembered defaults");
+    check(getUiAutomation().setRotation(originalRotation), "Choice form rotation restored");
+    pause();
+    click("fortified breast milk");
+    pause();
+    check(checked("fortified breast milk"), "Restored choice is checked in the reopened menu");
+    click("fortified breast milk");
+    pause();
+    capture("26-long-choice");
     click("Cancel");
     pause();
     getUiAutomation()
@@ -1086,6 +1114,72 @@ public final class SmokeInstrumentation extends Instrumentation {
     check(
         !contains("Choose your activities"),
         "System Back returns from grid without closing the app");
+  }
+
+  private void booleanChoices() throws Exception {
+    AppController app = AppController.get(getTargetContext());
+    click("Log activity");
+    click("Sleep");
+    click("Start a timer now");
+    click("Automatic");
+    pause();
+    check(checked("Automatic"), "An unset optional boolean is Automatic");
+    click("No");
+    pause();
+    click("Add sample");
+    pause();
+    check(
+        app.activities().defaults("sleep", app.child()).getString("nap").equals("false"),
+        "No saves false rather than the display label");
+    click("Log activity");
+    click("Sleep");
+    check(awaitText("No"), "Optional boolean remembers No");
+    click("No");
+    pause();
+    check(checked("No"), "Optional boolean menu exposes the checked value");
+    capture("27-boolean-menu");
+    click("Yes");
+    pause();
+    click("Yes");
+    pause();
+    check(checked("Yes"), "Optional boolean can change to Yes");
+    click("Automatic");
+    pause();
+    click("Start a timer now");
+    click("Add sample");
+    pause();
+    JSONArray sleep = app.data.getJSONArray("sleep");
+    check(
+        app.activities().defaults("sleep", app.child()).getString("nap").isEmpty()
+            && !sleep.getJSONObject(sleep.length() - 1).has("nap"),
+        "Automatic remembers an unset choice and omits the boolean from the saved activity");
+  }
+
+  private void readableChoice(String text) {
+    for (AccessibilityNodeInfo node : uiRoot().findAccessibilityNodeInfosByText(text)) {
+      if (!text.contentEquals(node.getText())) continue;
+      node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId());
+      pause();
+      Bundle request = new Bundle();
+      request.putInt(
+          AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_ARG_START_INDEX,
+          text.length() - 1);
+      request.putInt(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_ARG_LENGTH, 1);
+      node.refreshWithExtraData(
+          AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY, request);
+      Parcelable[] locations =
+          node.getExtras()
+              .getParcelableArray(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY);
+      android.graphics.Rect bounds = new android.graphics.Rect();
+      node.getBoundsInScreen(bounds);
+      android.graphics.RectF last =
+          locations != null && locations.length == 1 ? (android.graphics.RectF) locations[0] : null;
+      check(
+          last != null && bounds.contains((int) last.centerX(), (int) last.centerY()),
+          "The last character of a long dropdown option is visible inside its row");
+      return;
+    }
+    throw new AssertionError("Missing dropdown option: " + text);
   }
 
   private void diagnosticsFlow() throws Exception {
