@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Feature idea
+    url: https://github.com/Felixre7/Baby-Buddy-Pocket/discussions/categories/ideas
+    about: Discuss the problem and a simple solution before starting implementation.
+  - name: Setup or usage question
+    url: https://github.com/Felixre7/Baby-Buddy-Pocket/discussions/categories/q-a
+    about: Ask for help using the app or connecting an existing Baby Buddy server.

@@ -2,6 +2,8 @@
 
 The public app name is **Baby Buddy Pocket**. The Android identity is `com.babybuddypocket.app`. Version 0.1.10 deliberately starts a fresh installation, as authorized by the user; retain this new identity for future updates. Keep the existing-server requirement prominent in onboarding and store descriptions. Keep the former prototype name out of all committed text, identifiers, and paths.
 
+Follow [CONTRIBUTING.md](CONTRIBUTING.md), including its AI policy. AI-assisted implementation is welcome with human review and accurate validation. Do not generate or post bug reports or feature proposals on a user's behalf; ask them to describe their own experience in their own words and preferred language. Maintainer requests in the active session already establish scope and do not need a duplicate public issue.
+
 ## Product priorities
 
 - The user's explicit priority is useful functionality and simplicity over almost everything. Optimize for maintainability, responsiveness, easy self-builds, and few dependencies rather than feature count.

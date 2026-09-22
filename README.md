@@ -152,6 +152,10 @@ Check for the runner's `PASS` result; ADB's exit code alone does not prove the i
 
 An opt-in live integration runner is also available; see [live sync testing](docs/LIVE-SYNC-TESTING.md). The default smoke run uses synthetic offline data and never contacts a server.
 
+## Contributing and feedback
+
+Use the [bug report form](https://github.com/Felixre7/Baby-Buddy-Pocket/issues/new/choose) for problems and [Discussions](https://github.com/Felixre7/Baby-Buddy-Pocket/discussions) for feature ideas and usage questions. Read [CONTRIBUTING.md](CONTRIBUTING.md) before starting a change, including the [AI usage policy](CONTRIBUTING.md#ai-usage-policy): AI-assisted implementation is welcome when reviewed and tested; reports and feature proposals must be written in your own words. Any language is welcome. Keep credentials and family records out of public posts.
+
 ## Privacy and architecture
 
 - Network calls go directly to your configured HTTPS API. Authentication is `Authorization: Token …`. Requests cannot follow a pagination link to a different origin/API path; redirects are refused.

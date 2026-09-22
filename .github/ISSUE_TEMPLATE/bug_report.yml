@@ -1,0 +1,89 @@
+name: Bug report
+description: Tell us about a problem you experienced in Baby Buddy Pocket.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search existing issues first. For a new feature, use [Discussions → Ideas](https://github.com/Felixre7/Baby-Buddy-Pocket/discussions/categories/ideas).
+
+        This report is public. Leave out API tokens, server addresses, setup QR codes, children's details, and private activity records. Use made-up examples and redact screenshots.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What went wrong?
+      description: Briefly describe what you experienced, in your own words and preferred language.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: List the actions that led to the problem. If it happened only once, describe what you remember.
+      placeholder: |
+        1. Open ...
+        2. Tap ...
+        3. The app ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: Describe the result you wanted.
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: Find the version and build code in Settings → Report a problem, or Android's app information.
+      placeholder: "For example: 0.1.15 (16)"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Phone or tablet model
+      placeholder: "For example: Google Pixel 9 Pro"
+    validations:
+      required: true
+  - type: input
+    id: android-version
+    attributes:
+      label: Android version
+      placeholder: "For example: Android 16 (API 36)"
+    validations:
+      required: true
+  - type: input
+    id: server-version
+    attributes:
+      label: Baby Buddy server version, if known
+      description: Version only; do not include the server address or API token. Leave blank for the local demo or if unknown.
+  - type: textarea
+    id: sync-context
+    attributes:
+      label: Offline or shared activity context
+      description: For sync or timer problems, tell us whether the phone was online, offline, or reconnecting, and whether another caregiver was using the same child or timer. Include any queued/rejected/review status, without private record contents.
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic report (optional)
+      description: Open Settings → Report a problem, preview the report, then use Copy report. Check it before pasting. No server logs, database exports, or credentials are needed.
+      render: text
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or other context (optional)
+      description: Attach only cropped or redacted images. Hide server addresses, credentials, QR codes, children's details, and activity contents.
+  - type: checkboxes
+    id: reporting-policy
+    attributes:
+      label: Before submitting
+      description: Read the [contribution and AI policy](https://github.com/Felixre7/Baby-Buddy-Pocket/blob/main/CONTRIBUTING.md#ai-usage-policy).
+      options:
+        - label: I searched the existing issues for this problem.
+          required: true
+        - label: I described my own experience myself, in my preferred language, without an AI-written report or summary.
+          required: true
+        - label: I checked the report and attachments for credentials and private family information.
+          required: true
