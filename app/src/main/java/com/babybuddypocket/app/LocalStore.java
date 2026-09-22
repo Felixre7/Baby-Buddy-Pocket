@@ -12,7 +12,7 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
   }
 
   LocalStore(Context context, String name) {
-    super(context, name, null, 5);
+    super(context, name, null, 6);
   }
 
   @Override
@@ -21,12 +21,13 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
     db.execSQL(
         "CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, endpoint TEXT NOT NULL, payload"
             + " TEXT NOT NULL, state TEXT NOT NULL, message TEXT NOT NULL, method TEXT NOT NULL"
-            + " DEFAULT 'POST', cleanup_timer INTEGER, cleanup_start TEXT)");
+            + " DEFAULT 'POST', cleanup_timer INTEGER, cleanup_start TEXT, original TEXT)");
     createTimers(db);
   }
 
   @Override
   public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+    if (oldVersion < 6) db.execSQL("ALTER TABLE outbox ADD COLUMN original TEXT");
     if (oldVersion < 5) db.execSQL("ALTER TABLE outbox ADD COLUMN cleanup_start TEXT");
     if (oldVersion >= 2 && oldVersion < 4)
       db.execSQL(
@@ -329,8 +330,9 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
     try (Cursor cursor =
         getReadableDatabase()
             .rawQuery(
-                "SELECT id,endpoint,payload,state,message,method,cleanup_timer,cleanup_start FROM"
-                    + " outbox ORDER BY id",
+                "SELECT"
+                    + " id,endpoint,payload,state,message,method,cleanup_timer,cleanup_start,original"
+                    + " FROM outbox ORDER BY id",
                 null)) {
       while (cursor.moveToNext())
         rows.add(
@@ -342,7 +344,8 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
                 .put("message", cursor.getString(4))
                 .put("method", cursor.getString(5))
                 .put("cleanup_timer", cursor.isNull(6) ? null : cursor.getLong(6))
-                .put("cleanup_start", cursor.isNull(7) ? null : cursor.getString(7)));
+                .put("cleanup_start", cursor.isNull(7) ? null : cursor.getString(7))
+                .put("original", cursor.isNull(8) ? null : new JSONObject(cursor.getString(8))));
     } catch (JSONException e) {
       throw new IllegalStateException(e);
     }
@@ -359,7 +362,32 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
         == 1;
   }
 
-  synchronized void editRejected(long id, JSONObject payload) throws Exception {
+  synchronized void enqueueEdit(String endpoint, JSONObject original, JSONObject payload)
+      throws Exception {
+    if (original.getLong("id") <= 0 || payload.getLong("child") != original.getLong("child"))
+      throw new IllegalArgumentException("The activity identity cannot be changed.");
+    for (JSONObject row : pending())
+      if (row.optString("endpoint").equals(endpoint)
+          && row.has("original")
+          && row.getJSONObject("original").getLong("id") == original.getLong("id"))
+        throw new IllegalArgumentException(
+            "This activity already has a pending edit. Open its pending copy to change it.");
+    if (ActivityEdits.changes(original, payload).length() == 0) return;
+    SQLiteDatabase db = getWritableDatabase();
+    db.beginTransaction();
+    try {
+      long id = enqueue(endpoint, payload);
+      ContentValues values = new ContentValues();
+      values.put("method", "PATCH");
+      values.put("original", original.toString());
+      db.update("outbox", values, "id=?", new String[] {Long.toString(id)});
+      db.setTransactionSuccessful();
+    } finally {
+      db.endTransaction();
+    }
+  }
+
+  synchronized void editPending(long id, JSONObject payload) throws Exception {
     JSONObject existing = null;
     for (JSONObject row : pending()) if (row.getLong("local_id") == id) existing = row;
     if (existing == null || !SyncFeedback.canEdit(existing))
@@ -376,7 +404,11 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
     if (existing.has("cleanup_timer"))
       values.put("cleanup_start", existing.optString("cleanup_start", original.getString("start")));
     if (getWritableDatabase()
-            .update("outbox", values, "id=? AND state='rejected'", new String[] {Long.toString(id)})
+            .update(
+                "outbox",
+                values,
+                "id=? AND state IN ('queued','rejected')",
+                new String[] {Long.toString(id)})
         != 1) throw new IllegalStateException("The entry changed while it was being edited.");
   }
 

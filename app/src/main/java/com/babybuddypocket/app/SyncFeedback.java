@@ -89,6 +89,8 @@ final class SyncFeedback {
       return "We couldn't confirm whether this entry reached the server. It is still saved here."
           + " Check the timeline or server before retrying, so it isn't logged twice.";
     if (raw.equals(TimerPolicy.CONFLICT)
+        || raw.equals(ActivityEdits.CONFLICT)
+        || raw.equals(ActivityEdits.REMOVED)
         || raw.startsWith("The shared timer changed.")
         || raw.startsWith("The shared timer was already finished or removed.")
         || raw.startsWith("The timer was restarted or changed.")) return raw;
@@ -108,8 +110,11 @@ final class SyncFeedback {
   }
 
   static boolean canEdit(JSONObject row) {
-    return row.optString("state").equals("rejected")
-        && row.optString("method", "POST").equals("POST")
+    return (row.optString("state").equals("rejected") || row.optString("state").equals("queued"))
+        && !row.optString("message").equals(ActivityEdits.CONFLICT)
+        && !row.optString("message").equals(ActivityEdits.REMOVED)
+        && (row.optString("method", "POST").equals("POST")
+            || row.optString("method").equals("PATCH"))
         && !row.optString("endpoint").equals("timers")
         && row.optJSONObject("payload") != null
         && !row.optJSONObject("payload").has("timer");

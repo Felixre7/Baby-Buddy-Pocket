@@ -133,7 +133,35 @@ public final class SyncEngine {
         // A previous local Stop/Cancel owns its cleanup. Send that before the next start.
         if (waitForCleanup) continue;
       }
-      if (endpoint.equals("timers") || Records.timed(endpoint)) {
+      String method = item.optString("method", "POST");
+      String path = endpoint + "/";
+      if (method.equals("PATCH")) {
+        JSONObject original = item.getJSONObject("original");
+        path += original.getLong("id") + "/";
+        JSONObject changes = ActivityEdits.changes(original, payload);
+        try {
+          JSONObject current = api.object("GET", path, null);
+          if (ActivityEdits.matches(current, payload, changes)) {
+            if (store.claim(id)) store.accepted(id, endpoint, current);
+            continue;
+          }
+          if (!ActivityEdits.matches(current, original, changes)) {
+            if (store.claim(id)) store.state(id, "rejected", ActivityEdits.CONFLICT);
+            continue;
+          }
+        } catch (ApiClient.HttpFailure e) {
+          if (e.status >= 400 && e.status < 500 && e.status != 408) {
+            if (store.claim(id))
+              store.state(id, "rejected", e.status == 404 ? ActivityEdits.REMOVED : e.getMessage());
+            log(DiagnosticLog.Event.WRITE_REJECTED, e);
+            if (e.status == 401 || e.status == 403) throw e;
+            continue;
+          }
+          throw e;
+        }
+        // Only changed fields: unrelated changes made by another caregiver are preserved.
+        payload = changes;
+      } else if (endpoint.equals("timers") || Records.timed(endpoint)) {
         JSONObject adjusted = api.timerTimes(payload, item.has("cleanup_timer"));
         if (!adjusted.optString("start").equals(payload.optString("start"))
             || !adjusted.optString("end").equals(payload.optString("end")))
@@ -141,12 +169,15 @@ public final class SyncEngine {
         payload = adjusted;
       }
       // Persist before sending: a crash at any point now requires review rather than a duplicate
-      // POST.
+      // write.
       if (!store.claim(id)) continue;
       try {
-        JSONObject record = api.object("POST", endpoint + "/", payload);
+        JSONObject record = api.object(method, path, payload);
         if (!record.has("id"))
           throw new IllegalStateException("The server did not return a record ID.");
+        if (method.equals("PATCH")
+            && record.getLong("id") != item.getJSONObject("original").getLong("id"))
+          throw new IllegalStateException("The server returned a different activity.");
         store.accepted(id, endpoint, record);
         log(DiagnosticLog.Event.WRITE_ACCEPTED, null);
       } catch (ApiClient.HttpFailure e) {

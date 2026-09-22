@@ -164,4 +164,24 @@ public final class FormValues {
         throw new IllegalArgumentException("A session cannot be longer than 24 hours.");
     }
   }
+
+  static JSONObject parseEdit(
+      JSONObject schema, Map<String, String> values, long child, JSONObject original)
+      throws Exception {
+    JSONObject result = parse(schema, values, child, null);
+    for (String key : values.keySet()) {
+      if (result.has(key) || !original.has(key) || original.isNull(key)) continue;
+      JSONObject field = schema.optJSONObject(key);
+      if (field == null || field.optBoolean("read_only")) continue;
+      if (key.equals("tags")) result.put(key, new JSONArray());
+      else if (field.optBoolean("allow_blank")
+          || (field.optString("type").equals("string") && !required(schema, key)))
+        result.put(key, "");
+      else if (field.optBoolean("allow_null")) result.put(key, JSONObject.NULL);
+      else
+        throw new IllegalArgumentException(
+            field.optString("label", key) + " cannot be cleared. Choose a value.");
+    }
+    return result;
+  }
 }

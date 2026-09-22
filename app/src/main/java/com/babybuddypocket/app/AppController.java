@@ -403,7 +403,26 @@ public final class AppController {
   void editPending(long id, JSONObject payload) throws Exception {
     if (busy)
       throw new IllegalStateException("Wait until syncing finishes before saving these changes.");
-    store.editRejected(id, payload);
+    store.editPending(id, payload);
+    changed();
+    sync();
+  }
+
+  void editActivity(String endpoint, JSONObject original, JSONObject payload) throws Exception {
+    if (demo) {
+      JSONArray rows = data.getJSONArray(endpoint);
+      for (int i = 0; i < rows.length(); i++)
+        if (rows.getJSONObject(i).getLong("id") == original.getLong("id")) {
+          JSONObject edited = Records.copy(rows.getJSONObject(i));
+          payload.keys().forEachRemaining(key -> Records.put(edited, key, payload.opt(key)));
+          rows.put(i, edited);
+          changed();
+          return;
+        }
+      throw new IllegalArgumentException("This sample activity no longer exists.");
+    }
+    if (!connected()) throw new IllegalStateException("Connect a server before editing.");
+    store.enqueueEdit(endpoint, original, payload);
     changed();
     sync();
   }

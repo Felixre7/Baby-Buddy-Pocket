@@ -469,6 +469,7 @@ public final class MainActivity extends Activity {
       ui.gap(page, 12);
     }
     ui.add(page, ui.button("＋  Log activity", true, () -> chooseLog(null)));
+    rows = activityRows();
     ui.section(page, "LATEST MOMENTS");
     if (rows.isEmpty())
       empty("Your day starts here", "Log a feeding, a nap, or a little moment to remember.");
@@ -697,18 +698,7 @@ public final class MainActivity extends Activity {
   private void fillTimeline() {
     if (timelineRows == null) return;
     timelineRows.removeAllViews();
-    List<JSONObject> rows = visibleRows();
-    for (JSONObject queued : app.pending()) {
-      JSONObject payload = queued.optJSONObject("payload");
-      if (payload != null
-          && payload.optLong("child") == app.child()
-          && app.activities().visible(queued.optString("endpoint"))) {
-        JSONObject row = Records.put(Records.copy(payload), "_type", queued.optString("endpoint"));
-        Records.put(row, "_pending", SyncFeedback.label(queued));
-        rows.add(row);
-      }
-    }
-    rows.sort((a, b) -> Records.time(b).compareTo(Records.time(a)));
+    List<JSONObject> rows = activityRows();
     int shown = 0, matching = 0;
     String previous = "";
     for (JSONObject row : rows) {
@@ -780,14 +770,27 @@ public final class MainActivity extends Activity {
       for (int i = 0; i < tags.length(); i++) names.add(tags.optString(i));
       ui.add(card, ui.text("• " + String.join("   • ", names), 11, ui.accent, false));
     }
-    if (row.has("_pending")) {
-      ui.gap(card, 8);
-      ui.add(card, ui.text(row.optString("_pending"), 12, ui.accent, true));
-    }
+    JSONObject pending = row.optJSONObject("_pending");
+    boolean attention = pending != null && SyncFeedback.needsAttention(pending);
+    String status =
+        app.demo
+            ? "Demo entry"
+            : pending == null
+                ? "Synced"
+                : attention ? SyncFeedback.label(pending) : "Saved on this phone; waiting to sync";
+    TextView symbol =
+        ui.text(
+            app.demo ? "◇" : pending == null ? "✓" : attention ? "!" : "○",
+            12,
+            attention ? Ui.color(ui.dark ? "#FFB4AB" : "#A53830") : ui.muted,
+            attention);
+    symbol.setContentDescription(status);
+    symbol.setTooltipText(status);
+    ui.add(right, symbol);
     ui.clickable(
         card,
         () -> {
-          if (row.has("_pending")) pending();
+          if (pending != null) pendingDetail(pending);
           else details(row);
         });
   }
@@ -854,7 +857,7 @@ public final class MainActivity extends Activity {
     for (String type : app.activities().visible()) {
       if (!Arrays.asList("weight", "height", "head-circumference", "temperature", "bmi")
           .contains(type)) continue;
-      for (JSONObject row : rows)
+      for (JSONObject row : activityRows())
         if (type.equals(row.optString("_type"))) {
           if (!measurements) ui.section(page, "LATEST MEASUREMENTS");
           measurements = true;
@@ -862,6 +865,12 @@ public final class MainActivity extends Activity {
           break;
         }
     }
+  }
+
+  private List<JSONObject> activityRows() {
+    List<JSONObject> rows = ActivityEdits.rows(app.data, app.child(), app.pending());
+    rows.removeIf(row -> !app.activities().visible(row.optString("_type")));
+    return rows;
   }
 
   private List<JSONObject> visibleRows() {
@@ -1214,11 +1223,15 @@ public final class MainActivity extends Activity {
     text.setPadding(ui.dp(22), ui.dp(8), ui.dp(22), ui.dp(22));
     ScrollView view = new ScrollView(this);
     view.addView(text);
-    new AlertDialog.Builder(this)
-        .setTitle(Records.title(row.optString("_type")))
-        .setView(view)
-        .setPositiveButton("Done", null)
-        .show();
+    AlertDialog.Builder builder =
+        new AlertDialog.Builder(this)
+            .setTitle(Records.title(row.optString("_type")))
+            .setView(view)
+            .setPositiveButton("Done", null);
+    if (app.schema(row.optString("_type")) != null)
+      builder.setNeutralButton(
+          "Edit activity", (d, w) -> form.edit(row.optString("_type"), row, null, row));
+    builder.show();
   }
 
   private void diagnostics() {
@@ -1404,24 +1417,8 @@ public final class MainActivity extends Activity {
                   message("Sync in progress", "Wait until syncing finishes.");
                   return;
                 }
-                Bundle draft = new Bundle();
-                draft.putLong("pendingEntry", id);
-                draft.putLong("child", payload.optLong("child"));
-                draft.putBoolean("startingTimer", false);
-                Iterator<String> keys = payload.keys();
-                while (keys.hasNext()) {
-                  String key = keys.next();
-                  String value = payload.isNull(key) ? "" : payload.optString(key);
-                  if (key.equals("tags") && payload.optJSONArray(key) != null) {
-                    List<String> tags = new ArrayList<>();
-                    JSONArray array = payload.optJSONArray(key);
-                    for (int i = 0; i < array.length(); i++) tags.add(array.optString(i));
-                    value = String.join(", ", tags);
-                  }
-                  draft.putString("field:" + key, value);
-                }
                 dialog.dismiss();
-                form.show(row.optString("endpoint"), null, draft);
+                form.edit(row.optString("endpoint"), payload, id, row.optJSONObject("original"));
               }));
     }
     ui.add(

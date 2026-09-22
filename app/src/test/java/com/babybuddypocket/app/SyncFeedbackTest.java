@@ -58,7 +58,7 @@ public class SyncFeedbackTest {
     assertTrue(SyncFeedback.pending(row).contains("couldn't confirm"));
     assertFalse(SyncFeedback.canEdit(row));
     row.put("state", "queued");
-    assertFalse(SyncFeedback.canEdit(row));
+    assertTrue(SyncFeedback.canEdit(row));
     row.put("state", "rejected");
     assertTrue(SyncFeedback.canEdit(row));
     row.put("endpoint", "timers");

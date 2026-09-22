@@ -23,6 +23,7 @@ final class RecordForm {
   private boolean startingTimer;
   private Long localTimer;
   private Long pendingEntry;
+  private JSONObject original;
 
   RecordForm(MainActivity activity, Ui ui, AppController app) {
     this.activity = activity;
@@ -47,6 +48,7 @@ final class RecordForm {
     if (localTimer != null) out.putLong("localTimer", localTimer);
     if (timer != null) out.putLong("timer", timer);
     if (pendingEntry != null) out.putLong("pendingEntry", pendingEntry);
+    if (original != null) out.putString("original", original.toString());
     for (Map.Entry<String, Supplier<String>> entry : readers.entrySet())
       out.putString("field:" + entry.getKey(), entry.getValue().get());
     return out;
@@ -62,6 +64,15 @@ final class RecordForm {
     }
     this.endpoint = endpoint;
     this.timer = timer;
+    original = null;
+    if (restored != null && restored.containsKey("original")) {
+      try {
+        original = new JSONObject(restored.getString("original"));
+      } catch (JSONException e) {
+        activity.message("Unable to restore edit", "Open this activity again.");
+        return;
+      }
+    }
     pendingEntry =
         restored != null && restored.containsKey("pendingEntry")
             ? restored.getLong("pendingEntry")
@@ -100,7 +111,11 @@ final class RecordForm {
               14));
       ui.gap(content, 16);
     }
-    if (timer == null && localTimer == null && pendingEntry == null && Records.timed(endpoint)) {
+    if (timer == null
+        && localTimer == null
+        && pendingEntry == null
+        && original == null
+        && Records.timed(endpoint)) {
       Switch mode = new Switch(activity);
       mode.setText(R.string.start_timer_now);
       mode.setTextColor(ui.ink);
@@ -276,7 +291,7 @@ final class RecordForm {
     dialog =
         new AlertDialog.Builder(activity)
             .setTitle(
-                (pendingEntry != null
+                (pendingEntry != null || original != null
                         ? "Edit "
                         : startingTimer ? "Time " : timer == null ? "Log " : "Finish as ")
                     + Records.title(endpoint).toLowerCase(Locale.ROOT))
@@ -285,7 +300,7 @@ final class RecordForm {
     ui.add(
         content,
         ui.button(
-            pendingEntry != null
+            pendingEntry != null || original != null
                 ? "Save changes"
                 : startingTimer ? "Start timer" : app.demo ? "Add sample" : "Save entry",
             true,
@@ -298,8 +313,12 @@ final class RecordForm {
                   values.put("start", now);
                   values.put("end", now);
                 }
-                JSONObject payload = FormValues.parse(schema, values, child, timer);
+                JSONObject payload =
+                    original == null
+                        ? FormValues.parse(schema, values, child, timer)
+                        : FormValues.parseEdit(schema, values, child, original);
                 if (pendingEntry != null) app.editPending(pendingEntry, payload);
+                else if (original != null) app.editActivity(endpoint, original, payload);
                 else if (startingTimer) app.startTimer(endpoint, payload);
                 else if (localTimer != null) app.finishTimer(localTimer, payload);
                 else app.add(endpoint, payload);
@@ -328,5 +347,26 @@ final class RecordForm {
     dialog.getWindow().setBackgroundDrawable(ui.shape(ui.surface, 24));
     dialog.getWindow().getDecorView().setClipToOutline(true);
     dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+  }
+
+  void edit(String endpoint, JSONObject payload, Long pendingId, JSONObject serverOriginal) {
+    Bundle draft = new Bundle();
+    draft.putLong("child", payload.optLong("child"));
+    draft.putBoolean("startingTimer", false);
+    if (pendingId != null) draft.putLong("pendingEntry", pendingId);
+    if (serverOriginal != null) draft.putString("original", serverOriginal.toString());
+    Iterator<String> keys = payload.keys();
+    while (keys.hasNext()) {
+      String key = keys.next();
+      String value = payload.isNull(key) ? "" : payload.optString(key);
+      if (key.equals("tags") && payload.optJSONArray(key) != null) {
+        List<String> tags = new ArrayList<>();
+        JSONArray array = payload.optJSONArray(key);
+        for (int i = 0; i < array.length(); i++) tags.add(array.optString(i));
+        value = String.join(", ", tags);
+      }
+      draft.putString("field:" + key, value);
+    }
+    show(endpoint, null, draft);
   }
 }

@@ -50,6 +50,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       rejectedTimersAndCancellation();
       offlineTimerConflict();
       rejectedActivities();
+      historicEdits();
       activityPreferences();
       credentials();
       getTargetContext()
@@ -119,6 +120,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       diagnosticsFlow();
       syncPresentation();
       rejectionPresentation();
+      editingPresentation();
       result.putString(
           "stream",
           "\nPASS: "
@@ -592,12 +594,12 @@ public final class SmokeInstrumentation extends Instrumentation {
             .put("end", "2026-01-01T03:00:00Z");
     boolean blocked = false;
     try {
-      store.editRejected(id, Records.copy(corrected).put("child", 2));
+      store.editPending(id, Records.copy(corrected).put("child", 2));
     } catch (IllegalArgumentException expected) {
       blocked = true;
     }
     check(blocked, "Editing cannot move a rejected entry to another child");
-    store.editRejected(id, corrected);
+    store.editPending(id, corrected);
     check(
         store.pending().size() == 1
             && store.pending().get(0).getLong("local_id") == id
@@ -629,7 +631,7 @@ public final class SmokeInstrumentation extends Instrumentation {
     store.state(id, "review", "Unknown outcome");
     blocked = false;
     try {
-      store.editRejected(id, corrected);
+      store.editPending(id, corrected);
     } catch (IllegalArgumentException expected) {
       blocked = true;
     }
@@ -645,7 +647,7 @@ public final class SmokeInstrumentation extends Instrumentation {
     store.discard(id);
     blocked = false;
     try {
-      store.editRejected(id, corrected);
+      store.editPending(id, corrected);
     } catch (IllegalArgumentException expected) {
       blocked = true;
     }
@@ -673,7 +675,7 @@ public final class SmokeInstrumentation extends Instrumentation {
     old.setVersion(4);
     old.close();
     store = new LocalStore(getTargetContext(), name);
-    store.editRejected(1, corrected);
+    store.editPending(1, corrected);
     store.close();
     store = new LocalStore(getTargetContext(), name);
     check(
@@ -686,6 +688,95 @@ public final class SmokeInstrumentation extends Instrumentation {
                 .equals(corrected.getString("start")),
         "Version 4 upgrade preserves the old shared timer identity through edit and restart");
     store.clear();
+    store.close();
+    getTargetContext().deleteDatabase(name);
+  }
+
+  private void historicEdits() throws Exception {
+    java.net.HttpURLConnection connection =
+        (java.net.HttpURLConnection) new java.net.URL("https://edit.invalid").openConnection();
+    connection.setRequestMethod("PATCH");
+    check(
+        connection.getRequestMethod().equals("PATCH"),
+        "Platform connection accepts PATCH without another HTTP library");
+    connection.disconnect();
+    String name = "historic-edit-test.db";
+    getTargetContext().deleteDatabase(name);
+    LocalStore store = new LocalStore(getTargetContext(), name);
+    JSONObject original =
+        new JSONObject()
+            .put("id", 31)
+            .put("child", 1)
+            .put("note", "Original")
+            .put("time", "2026-01-01T01:00:00Z");
+    JSONObject edited = Records.copy(original).put("note", "Edited offline");
+    store.replace(new JSONObject().put("notes", new JSONArray().put(original)));
+    store.enqueueEdit("notes", original, edited);
+    store.close();
+    store = new LocalStore(getTargetContext(), name);
+    JSONObject pending = store.pending().get(0);
+    long id = pending.getLong("local_id");
+    check(
+        pending.getString("method").equals("PATCH")
+            && pending.getJSONObject("original").getString("note").equals("Original")
+            && pending.getJSONObject("payload").getString("note").equals("Edited offline"),
+        "Offline edit and its comparison base survive restart");
+    boolean blocked = false;
+    try {
+      store.enqueueEdit("notes", original, edited);
+    } catch (IllegalArgumentException expected) {
+      blocked = true;
+    }
+    check(
+        blocked && store.pending().size() == 1,
+        "An activity cannot accumulate competing local edit requests");
+    store.editPending(id, Records.copy(edited).put("note", "Second correction"));
+    check(
+        store.pending().get(0).getJSONObject("original").getString("note").equals("Original"),
+        "Editing a queued correction keeps its first server comparison base");
+    store.discard(id);
+    check(
+        store
+            .snapshot()
+            .getJSONArray("notes")
+            .getJSONObject(0)
+            .getString("note")
+            .equals("Original"),
+        "Discarding an edit reveals the unchanged confirmed activity");
+    store.enqueueEdit("notes", original, edited);
+    final JSONObject current = Records.copy(original);
+    int[] patches = {0};
+    new SyncEngine(
+            store,
+            new ApiClient(
+                "https://edit.invalid",
+                "synthetic",
+                (method, uri, token, body) -> {
+                  String path = uri.getPath();
+                  if (method.equals("PATCH")) {
+                    patches[0]++;
+                    JSONObject patch = new JSONObject(body);
+                    current.put("note", patch.getString("note"));
+                    return current.toString();
+                  }
+                  if (path.equals("/api/notes/31/")) return current.toString();
+                  if (method.equals("OPTIONS")) return "{\"actions\":{\"POST\":{}}}";
+                  if (path.equals("/api/")) return "{\"notes\":\"/api/notes/\"}";
+                  if (path.equals("/api/children/")) return "[{\"id\":1}]";
+                  return new JSONArray().put(current).toString();
+                }))
+        .sync();
+    check(
+        patches[0] == 1
+            && store.pending().isEmpty()
+            && store.snapshot().getJSONArray("notes").length() == 1
+            && store
+                .snapshot()
+                .getJSONArray("notes")
+                .getJSONObject(0)
+                .getString("note")
+                .equals("Edited offline"),
+        "Reconnect updates the original server activity once and confirms its local copy");
     store.close();
     getTargetContext().deleteDatabase(name);
   }
@@ -1235,6 +1326,88 @@ public final class SmokeInstrumentation extends Instrumentation {
               && app.store.snapshot().getJSONArray("sleep").length()
                   == data.getJSONArray("sleep").length(),
           "Deleting a pending entry keeps downloaded server activities intact");
+    } finally {
+      runOnMainSync(
+          () -> {
+            app.busy = false;
+            app.disconnect();
+          });
+    }
+  }
+
+  private void editingPresentation() throws Exception {
+    AppController app = AppController.get(getTargetContext());
+    try {
+      runOnMainSync(
+          () -> {
+            app.demo();
+            app.listener.run();
+          });
+      JSONObject note = app.data.getJSONArray("notes").getJSONObject(0);
+      note.put("time", java.time.Instant.now().minusSeconds(60).toString());
+      note.put("note", "Historical activity to edit");
+      long recordId = note.getLong("id");
+      runOnMainSync(() -> app.listener.run());
+      click("Timeline");
+      click("Historical activity to edit");
+      click("Edit activity");
+      check(
+          awaitText("Edit note"),
+          "Historical activities use the same editor as pending corrections");
+      setTextByHint("Required", "Historical activity corrected");
+      setTextByHint("e.g. night, milestone", "");
+      click("Save changes");
+      pause();
+      check(
+          app.data.getJSONArray("notes").length() == 1
+              && app.data.getJSONArray("notes").getJSONObject(0).getLong("id") == recordId
+              && app.data
+                  .getJSONArray("notes")
+                  .getJSONObject(0)
+                  .getString("note")
+                  .equals("Historical activity corrected")
+              && app.data.getJSONArray("notes").getJSONObject(0).getJSONArray("tags").length() == 0,
+          "Historical save changes the existing activity and can clear tags");
+      JSONObject payload =
+          new JSONObject()
+              .put("child", 1)
+              .put("note", "Rejected card to correct")
+              .put("time", java.time.Instant.now().toString());
+      long id = app.store.enqueue("notes", payload);
+      app.store.state(id, "rejected", "Server returned 400. This field is required.");
+      app.credentials.save("https://sync-test.invalid", "synthetic-sync-token");
+      runOnMainSync(
+          () -> {
+            app.demo = false;
+            app.listener.run();
+          });
+      click("Timeline");
+      pause();
+      check(
+          contains("Needs attention") && contains("Synced"),
+          "Activity cards have discreet accessible error and confirmed status symbols");
+      capture("23-card-status");
+      click("Rejected card to correct");
+      check(
+          awaitText("required value is missing") && contains("Edit activity"),
+          "A rejected card opens its specific explanation and edit action");
+      click("Edit activity");
+      check(
+          awaitText("Edit note") && contains("Rejected card to correct"),
+          "Card correction opens the shared editor with its original values");
+      click("Cancel");
+      app.store.state(id, "queued", "Waiting to sync");
+      runOnMainSync(
+          () -> {
+            app.busy = true;
+            app.listener.run();
+          });
+      click("Today");
+      pause();
+      check(
+          contains("Saved on this phone; waiting to sync") && contains("Rejected card to correct"),
+          "Local entries and their status appear on Today as well as Timeline");
+      capture("24-local-status");
     } finally {
       runOnMainSync(
           () -> {
