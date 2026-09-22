@@ -19,6 +19,12 @@ sh ./gradlew :app:bundleRelease :app:assembleRelease :app:testDebugUnitTest :app
 
 The bundle is `app/build/outputs/bundle/release/app-release.aab`. It is **unsigned** with the current project configuration. The release APK is also unsigned. Local emulator testing uses a copy of the release APK signed with the Android debug key; that is test evidence, not a Play-ready signature.
 
+## License and corresponding source
+
+Baby Buddy Pocket uses [GPL-3.0-only](../LICENSE). For each distributed APK or Play release, provide the exact corresponding source, including build scripts and required dependency source, with clear access instructions next to the binary download or store listing. A link to a moving development branch is not a substitute for the source that matches the released build. Keep release source available for as long as required by the license.
+
+Include the GPLv3 text, project copyright/no-warranty notice, and source location with the distribution; retain ZXing's Apache-2.0 license/notices and the Gradle wrapper notices. Verify these items in the actual release package and listing before publishing. See GPLv3 sections 4–6 in [LICENSE](../LICENSE) for the distribution requirements. Existing 0.1.15 artifacts predate this license change and have not been rebuilt or relicensed retroactively.
+
 ## Before uploading
 
 1. Choose and securely back up an upload key, then use Android Studio's **Generate Signed App Bundle / APK** flow and enroll in Play App Signing. Keep keys/passwords outside Git. Do not use the debug key for the Play release. [App signing](https://developer.android.com/studio/publish/app-signing).

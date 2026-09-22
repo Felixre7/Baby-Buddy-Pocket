@@ -47,4 +47,4 @@ Documentation and issue-template changes do not need an APK build; check their l
 
 ## License
 
-Contributions are accepted under this repository's [MIT license](LICENSE). Preserve third-party license notices and only contribute material you have permission to share. Adopting this contribution workflow does not change the app's license.
+Contributions are accepted under the [GNU General Public License, version 3 only](LICENSE) (`GPL-3.0-only`). Preserve third-party license notices and only contribute material you have permission to share under these terms.

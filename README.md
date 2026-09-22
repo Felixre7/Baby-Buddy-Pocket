@@ -4,7 +4,7 @@
 
 A small, independent native Android companion for your own [Baby Buddy](https://github.com/babybuddy/babybuddy) server. Rounded cards, a calm palette, and a shared view of your baby's day.
 
-**Android 8.0+ · Java 17 · one standalone QR decoder dependency · MIT licensed**
+**Android 8.0+ · Java 17 · one standalone QR decoder dependency · GPLv3 licensed**
 
 Source: [Felixre7/Baby-Buddy-Pocket](https://github.com/Felixre7/Baby-Buddy-Pocket). Store copy: [Google Play listing draft](docs/PLAY-STORE-LISTING.md).
 
@@ -155,6 +155,16 @@ An opt-in live integration runner is also available; see [live sync testing](doc
 ## Contributing and feedback
 
 Use the [bug report form](https://github.com/Felixre7/Baby-Buddy-Pocket/issues/new/choose) for problems and [Discussions](https://github.com/Felixre7/Baby-Buddy-Pocket/discussions) for feature ideas and usage questions. Read [CONTRIBUTING.md](CONTRIBUTING.md) before starting a change, including the [AI usage policy](CONTRIBUTING.md#ai-usage-policy): AI-assisted implementation is welcome when reviewed and tested; reports and feature proposals must be written in your own words. Any language is welcome. Keep credentials and family records out of public posts.
+
+## License
+
+Copyright (c) 2026 Baby Buddy Pocket contributors.
+
+Baby Buddy Pocket is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License, version 3 only** (`SPDX-License-Identifier: GPL-3.0-only`). See [LICENSE](LICENSE) for the full terms. This applies to the project's original code, artwork, and documentation unless a file states otherwise.
+
+The software is distributed without any warranty, including the implied warranties of merchantability or fitness for a particular purpose. Distributed covered modifications must remain under GPLv3, with corresponding source provided as the license requires. Commercial use is allowed.
+
+Third-party components retain their own licenses and notices, including Apache-2.0 for ZXing and the Gradle wrapper. Earlier copies released under MIT retain their MIT permissions; this change does not revoke them.
 
 ## Privacy and architecture
 
