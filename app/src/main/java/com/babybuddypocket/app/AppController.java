@@ -24,6 +24,7 @@ public final class AppController {
   public JSONObject data;
   public boolean busy, demo;
   public String error = "";
+  JSONObject syncProblem;
   public Runnable listener;
   private final List<JSONObject> demoTimers = new ArrayList<>();
 
@@ -101,6 +102,7 @@ public final class AppController {
 
   public void sync() {
     if (busy || demo || !connected()) return;
+    List<JSONObject> before = store.pending();
     busy = true;
     error = "";
     changed();
@@ -129,6 +131,8 @@ public final class AppController {
                 if (snapshot != null) data = snapshot;
                 error = message;
                 busy = false;
+                JSONObject problem = SyncFeedback.newProblem(before, store.pending());
+                if (problem != null) syncProblem = problem;
                 changed();
                 // A user may have saved a new entry after this sync took its outbox snapshot.
                 if (message.isEmpty()
@@ -157,6 +161,7 @@ public final class AppController {
     demo = false;
     data = new JSONObject();
     error = "";
+    syncProblem = null;
     changed();
   }
 
@@ -393,6 +398,14 @@ public final class AppController {
       changed();
       sync();
     }
+  }
+
+  void editPending(long id, JSONObject payload) throws Exception {
+    if (busy)
+      throw new IllegalStateException("Wait until syncing finishes before saving these changes.");
+    store.editRejected(id, payload);
+    changed();
+    sync();
   }
 
   public static class MemoryStore implements SyncEngine.Store {

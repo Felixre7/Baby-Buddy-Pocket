@@ -49,6 +49,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       serverTimers();
       rejectedTimersAndCancellation();
       offlineTimerConflict();
+      rejectedActivities();
       activityPreferences();
       credentials();
       getTargetContext()
@@ -117,6 +118,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       customizationFlow();
       diagnosticsFlow();
       syncPresentation();
+      rejectionPresentation();
       result.putString(
           "stream",
           "\nPASS: "
@@ -559,6 +561,135 @@ public final class SmokeInstrumentation extends Instrumentation {
     getTargetContext().deleteDatabase(name);
   }
 
+  private void rejectedActivities() throws Exception {
+    String name = "rejected-activity-test.db";
+    getTargetContext().deleteDatabase(name);
+    LocalStore store = new LocalStore(getTargetContext(), name);
+    JSONObject original =
+        new JSONObject()
+            .put("child", 1)
+            .put("nap", false)
+            .put("start", "2026-01-01T01:00:00Z")
+            .put("end", "2026-01-01T02:00:00Z");
+    TimerServer server = new TimerServer();
+    server.sleep.put(Records.copy(original).put("id", 1));
+    server.timers.put(Records.copy(original).put("id", 99));
+    store.enqueueTimerFinish("sleep", original, 99);
+    long id = store.pending().get(0).getLong("local_id");
+    ApiClient api = new ApiClient("https://timers.invalid", "synthetic", server);
+    new SyncEngine(store, api).sync();
+    check(
+        SyncFeedback.label(store.pending().get(0)).equals("Times overlap"),
+        "An actual rejected POST has a plain overlap explanation");
+    store.close();
+    store = new LocalStore(getTargetContext(), name);
+    check(
+        store.pending().get(0).getJSONObject("payload").toString().equals(original.toString()),
+        "Rejected payload survives a restart unchanged");
+    JSONObject corrected =
+        Records.copy(original)
+            .put("start", "2026-01-01T02:00:00Z")
+            .put("end", "2026-01-01T03:00:00Z");
+    boolean blocked = false;
+    try {
+      store.editRejected(id, Records.copy(corrected).put("child", 2));
+    } catch (IllegalArgumentException expected) {
+      blocked = true;
+    }
+    check(blocked, "Editing cannot move a rejected entry to another child");
+    store.editRejected(id, corrected);
+    check(
+        store.pending().size() == 1
+            && store.pending().get(0).getLong("local_id") == id
+            && store
+                .pending()
+                .get(0)
+                .getString("cleanup_start")
+                .equals(original.getString("start")),
+        "Correction replaces the same pending entry and preserves original shared timer identity");
+    new SyncEngine(store, api).sync();
+    check(
+        server.finishes == 1 && store.pending().get(0).getString("method").equals("DELETE"),
+        "Corrected shared activity passes preflight and uploads once");
+    check(
+        store
+            .pending()
+            .get(0)
+            .getJSONObject("payload")
+            .getString("start")
+            .equals(original.getString("start")),
+        "Timer cleanup uses original timer start rather than corrected activity start");
+    server.timers.getJSONObject(0).put("start", "2026-01-01T04:00:00Z");
+    new SyncEngine(store, api).sync();
+    check(
+        server.timers.length() == 1 && store.pending().get(0).getString("state").equals("rejected"),
+        "A timer restarted after correction is never deleted");
+    store.clear();
+    id = store.enqueue("sleep", original);
+    store.state(id, "review", "Unknown outcome");
+    blocked = false;
+    try {
+      store.editRejected(id, corrected);
+    } catch (IllegalArgumentException expected) {
+      blocked = true;
+    }
+    check(
+        blocked
+            && store
+                .pending()
+                .get(0)
+                .getJSONObject("payload")
+                .toString()
+                .equals(original.toString()),
+        "Uncertain uploads cannot be edited or overwritten");
+    store.discard(id);
+    blocked = false;
+    try {
+      store.editRejected(id, corrected);
+    } catch (IllegalArgumentException expected) {
+      blocked = true;
+    }
+    check(
+        blocked && store.pending().isEmpty(),
+        "Stale editing cannot recreate a deleted pending entry");
+    store.close();
+    getTargetContext().deleteDatabase(name);
+    android.database.sqlite.SQLiteDatabase old =
+        android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(
+            getTargetContext().getDatabasePath(name), null);
+    old.execSQL("CREATE TABLE cache (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL)");
+    old.execSQL(
+        "CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, endpoint TEXT NOT NULL, payload"
+            + " TEXT NOT NULL, state TEXT NOT NULL, message TEXT NOT NULL, method TEXT NOT NULL"
+            + " DEFAULT 'POST', cleanup_timer INTEGER)");
+    old.execSQL(
+        "CREATE TABLE active_timers (id INTEGER PRIMARY KEY AUTOINCREMENT, endpoint TEXT NOT NULL,"
+            + " payload TEXT NOT NULL, start_id INTEGER, server_id INTEGER, finish_payload TEXT,"
+            + " cancel_requested INTEGER NOT NULL DEFAULT 0)");
+    old.execSQL(
+        "INSERT INTO outbox(id,endpoint,payload,state,message,cleanup_timer)"
+            + " VALUES(1,'sleep',?,'rejected','Overlap',99)",
+        new Object[] {original.toString()});
+    old.setVersion(4);
+    old.close();
+    store = new LocalStore(getTargetContext(), name);
+    store.editRejected(1, corrected);
+    store.close();
+    store = new LocalStore(getTargetContext(), name);
+    check(
+        store.pending().get(0).getString("cleanup_start").equals(original.getString("start"))
+            && store
+                .pending()
+                .get(0)
+                .getJSONObject("payload")
+                .getString("start")
+                .equals(corrected.getString("start")),
+        "Version 4 upgrade preserves the old shared timer identity through edit and restart");
+    store.clear();
+    store.close();
+    getTargetContext().deleteDatabase(name);
+  }
+
   /** API fixture enforces non-overlapping sessions and the 24-hour duration limit. No network. */
   private static final class TimerServer implements ApiClient.Transport {
     boolean offline, loseStartReply, loseDeleteReply;
@@ -888,7 +1019,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       capture("12-sync-settings");
       click("Pending entries (1)");
       pause();
-      check(awaitText("Note · queued"), "Pending records remain reviewable from Settings");
+      check(awaitText("Note · Waiting to sync"), "Pending records remain reviewable from Settings");
       click("Close");
       app.store.clear();
       app.data.getJSONObject("_schemas").put("timers", new JSONObject());
@@ -998,6 +1129,112 @@ public final class SmokeInstrumentation extends Instrumentation {
       check(
           !contains("Multiple timers found") && contains("Finish & log"),
           "Remaining timer stays accessible after choosing an extra timer to cancel");
+    } finally {
+      runOnMainSync(
+          () -> {
+            app.busy = false;
+            app.disconnect();
+          });
+    }
+  }
+
+  private void rejectionPresentation() throws Exception {
+    AppController app = AppController.get(getTargetContext());
+    app.credentials.save("https://sync-test.invalid", "synthetic-sync-token");
+    try {
+      JSONObject data = DemoData.create();
+      JSONObject payload =
+          new JSONObject()
+              .put("child", 1)
+              .put("nap", false)
+              .put("start", "2026-01-01T01:00:00Z")
+              .put("end", "2026-01-01T02:00:00Z")
+              .put("notes", "Keep this original note");
+      long id = app.store.enqueue("sleep", payload);
+      List<JSONObject> before = app.store.pending();
+      app.store.state(
+          id,
+          "rejected",
+          "Server returned 400. Another entry intersects the specified time period. <a"
+              + " href='private.invalid'>Private child</a>");
+      runOnMainSync(
+          () -> {
+            app.demo = false;
+            app.busy = false;
+            app.data = data;
+            app.store.replace(data);
+            app.syncProblem = SyncFeedback.newProblem(before, app.store.pending());
+            app.listener.run();
+          });
+      check(
+          awaitText("Sleep needs attention")
+              && contains("same type for this child")
+              && !contains("private.invalid"),
+          "New rejection appears without opening Settings and without raw server details");
+      pause();
+      capture("20-rejection-notice");
+      click("Review entry");
+      check(
+          awaitText("Edit activity") && contains("Delete pending entry"),
+          "Rejected activity offers correction and deletion");
+      pause();
+      capture("21-rejection-actions");
+      click("Edit activity");
+      check(
+          awaitText("Edit sleep")
+              && contains("Keep this original note")
+              && !contains("Start timer now"),
+          "Edit form prefills the rejected activity without timer mode");
+      pause();
+      capture("22-edit-rejected");
+      click("Cancel");
+      check(
+          app.store
+                  .pending()
+                  .get(0)
+                  .getJSONObject("payload")
+                  .getString("notes")
+                  .equals("Keep this original note")
+              && app.store.pending().get(0).getString("state").equals("rejected"),
+          "Cancel leaves rejected activity untouched");
+      click("Pending entries (1)");
+      click("Sleep · Times overlap");
+      click("Edit activity");
+      setTextByHint("Optional", "Corrected note");
+      // Keep this UI test fully offline: saving still exercises the real controller/store path.
+      app.credentials.clear();
+      click("Save changes");
+      check(
+          app.store.pending().size() == 1
+              && app.store.pending().get(0).getLong("local_id") == id
+              && app.store.pending().get(0).getString("state").equals("queued")
+              && app.store
+                  .pending()
+                  .get(0)
+                  .getJSONObject("payload")
+                  .getString("notes")
+                  .equals("Corrected note"),
+          "Save changes updates the same durable pending entry");
+      app.credentials.save("https://sync-test.invalid", "synthetic-sync-token");
+      app.store.state(id, "review", "Unknown outcome");
+      runOnMainSync(() -> app.listener.run());
+      click("Settings");
+      click("Pending entries (1)");
+      click("Sleep · Check before retrying");
+      check(
+          awaitText("couldn't confirm") && !contains("Edit activity"),
+          "Unknown-outcome uploads retain review-only handling");
+      click("Delete pending entry");
+      check(
+          awaitText("does not delete a server record"),
+          "Deletion clearly identifies the local copy");
+      click("Delete pending copy");
+      pause();
+      check(
+          app.store.pending().isEmpty()
+              && app.store.snapshot().getJSONArray("sleep").length()
+                  == data.getJSONArray("sleep").length(),
+          "Deleting a pending entry keeps downloaded server activities intact");
     } finally {
       runOnMainSync(
           () -> {

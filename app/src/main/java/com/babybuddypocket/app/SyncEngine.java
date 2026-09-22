@@ -84,7 +84,10 @@ public final class SyncEngine {
               api.object("GET", "timers/" + item.getLong("cleanup_timer") + "/", null);
           JSONObject payload = item.getJSONObject("payload");
           if ((!timer.isNull("child") && timer.getLong("child") != payload.getLong("child"))
-              || !Records.time(timer).equals(Records.time(payload))) {
+              || !Records.time(timer)
+                  .equals(
+                      Records.instant(
+                          item.optString("cleanup_start", payload.getString("start"))))) {
             store.state(
                 id,
                 "rejected",
@@ -195,6 +198,10 @@ public final class SyncEngine {
   }
 
   public static String friendly(Exception e) {
+    if (e instanceof ApiClient.HttpFailure) {
+      ApiClient.HttpFailure http = (ApiClient.HttpFailure) e;
+      return SyncFeedback.explain(http.status, http.getMessage());
+    }
     if (e instanceof java.net.UnknownHostException)
       return "Can't find the server. Check the address and your connection.";
     if (e instanceof javax.net.ssl.SSLException)

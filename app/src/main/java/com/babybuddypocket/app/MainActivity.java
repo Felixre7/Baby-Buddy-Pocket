@@ -200,6 +200,42 @@ public final class MainActivity extends Activity {
       }
     navigation();
     scroll.post(() -> scroll.scrollTo(0, oldScroll));
+    root.post(this::showSyncProblem);
+  }
+
+  @Override
+  public void onWindowFocusChanged(boolean hasFocus) {
+    super.onWindowFocusChanged(hasFocus);
+    if (hasFocus && root != null) root.post(this::showSyncProblem);
+  }
+
+  private void showSyncProblem() {
+    if (isFinishing()
+        || isDestroyed()
+        || !hasWindowFocus()
+        || app.busy
+        || form.visible()
+        || pendingForm != null
+        || app.syncProblem == null) return;
+    JSONObject problem = app.syncProblem;
+    app.syncProblem = null;
+    // The entry might have been resolved while another dialog was open.
+    for (JSONObject row : app.pending()) {
+      if (row.optLong("local_id") != problem.optLong("local_id")
+          || !SyncFeedback.needsAttention(row)) continue;
+      new AlertDialog.Builder(this)
+          .setTitle(Records.title(row.optString("endpoint")) + " needs attention")
+          .setMessage(SyncFeedback.pending(row))
+          .setPositiveButton(
+              "Review entry",
+              (d, w) -> {
+                navigate(3);
+                pendingDetail(row);
+              })
+          .setNegativeButton("Later", null)
+          .show();
+      break;
+    }
   }
 
   private void onboarding() {
@@ -537,8 +573,7 @@ public final class MainActivity extends Activity {
             () -> {
               try {
                 app.finishTimer(id, Records.copy(payload).put("end", Instant.now().toString()));
-                Toast.makeText(
-                        this, demo ? "Sample added" : "Saved on this device", Toast.LENGTH_SHORT)
+                Toast.makeText(this, demo ? "Sample added" : "Activity saved", Toast.LENGTH_SHORT)
                     .show();
               } catch (Exception e) {
                 app.log(DiagnosticLog.Event.LOCAL_FAILURE, e);
@@ -669,7 +704,7 @@ public final class MainActivity extends Activity {
           && payload.optLong("child") == app.child()
           && app.activities().visible(queued.optString("endpoint"))) {
         JSONObject row = Records.put(Records.copy(payload), "_type", queued.optString("endpoint"));
-        Records.put(row, "_pending", queued.optString("state"));
+        Records.put(row, "_pending", SyncFeedback.label(queued));
         rows.add(row);
       }
     }
@@ -747,7 +782,7 @@ public final class MainActivity extends Activity {
     }
     if (row.has("_pending")) {
       ui.gap(card, 8);
-      ui.add(card, ui.text("Pending · " + row.optString("_pending"), 12, ui.accent, true));
+      ui.add(card, ui.text(row.optString("_pending"), 12, ui.accent, true));
     }
     ui.clickable(
         card,
@@ -867,6 +902,22 @@ public final class MainActivity extends Activity {
     ui.add(connection, sync);
     if (!app.demo) {
       ui.gap(connection, 10);
+      List<JSONObject> attention = new ArrayList<>();
+      for (JSONObject row : app.pending()) if (SyncFeedback.needsAttention(row)) attention.add(row);
+      if (!attention.isEmpty()) {
+        ui.add(
+            connection,
+            ui.text(
+                attention.size()
+                    + (attention.size() == 1
+                        ? " entry needs attention"
+                        : " entries need attention"),
+                16,
+                ui.ink,
+                true));
+        ui.add(connection, ui.text(SyncFeedback.pending(attention.get(0)), 14));
+        ui.gap(connection, 10);
+      }
       ui.add(
           connection,
           ui.button("Pending entries (" + app.pending().size() + ")", false, this::pending));
@@ -1297,7 +1348,7 @@ public final class MainActivity extends Activity {
                   ? "Timer cleanup"
                   : Records.title(rows.get(i).optString("endpoint")))
               + " · "
-              + rows.get(i).optString("state");
+              + SyncFeedback.label(rows.get(i));
     new AlertDialog.Builder(this)
         .setTitle("Pending entries · tap for details")
         .setItems(names, (d, n) -> pendingDetail(rows.get(n)))
@@ -1310,63 +1361,136 @@ public final class MainActivity extends Activity {
     JSONObject payload =
         Records.put(Records.copy(row.optJSONObject("payload")), "_type", row.optString("endpoint"));
     boolean cleanup = row.optString("method").equals("DELETE");
-    String message =
-        row.optString("message")
-            + "\n\n"
-            + Records.summary(payload, app.units())
-            + "\n\n"
-            + (cleanup
-                ? "Retrying only removes this timer. Discard leaves the timer on the server;"
-                    + " any already saved activity is kept."
-                : "Retrying an entry that reached the server can create a duplicate. Check the"
-                    + " timeline or your server first. Discard removes only this device's pending"
-                    + " copy.");
-    new AlertDialog.Builder(this)
-        .setTitle(Records.title(row.optString("endpoint")) + " · " + row.optString("state"))
-        .setMessage(message)
-        .setPositiveButton(
+    LinearLayout content = ui.column();
+    content.setPadding(ui.dp(22), ui.dp(8), ui.dp(22), ui.dp(20));
+    ui.add(content, ui.text(SyncFeedback.pending(row), 16));
+    ui.gap(content, 16);
+    ui.add(content, ui.text(Records.summary(payload, app.units()), 14));
+    if (payload.has("start") || payload.has("time") || payload.has("date")) {
+      Instant start = Records.time(payload);
+      ui.add(content, ui.text(dayLabel(start) + " · " + Records.clock(start), 14));
+      if (payload.has("end")) {
+        Instant end = Records.instant(payload.optString("end"));
+        ui.add(content, ui.text("Until " + dayLabel(end) + " · " + Records.clock(end), 14));
+      }
+    }
+    ui.gap(content, 16);
+    ui.add(
+        content,
+        ui.text(
+            cleanup
+                ? "Deleting this pending entry leaves the timer on the server. Any saved activity"
+                    + " is kept."
+                : "Delete pending entry removes only this device's unsynced copy. Server records"
+                    + " stay intact.",
+            14,
+            ui.muted,
+            false));
+    ScrollView view = new ScrollView(this);
+    view.addView(content);
+    AlertDialog dialog =
+        new AlertDialog.Builder(this)
+            .setTitle(Records.title(row.optString("endpoint")) + " · " + SyncFeedback.label(row))
+            .setView(view)
+            .create();
+    if (SyncFeedback.canEdit(row) && app.schema(row.optString("endpoint")) != null) {
+      ui.add(
+          content,
+          ui.button(
+              "Edit activity",
+              true,
+              () -> {
+                if (app.busy) {
+                  message("Sync in progress", "Wait until syncing finishes.");
+                  return;
+                }
+                Bundle draft = new Bundle();
+                draft.putLong("pendingEntry", id);
+                draft.putLong("child", payload.optLong("child"));
+                draft.putBoolean("startingTimer", false);
+                Iterator<String> keys = payload.keys();
+                while (keys.hasNext()) {
+                  String key = keys.next();
+                  String value = payload.isNull(key) ? "" : payload.optString(key);
+                  if (key.equals("tags") && payload.optJSONArray(key) != null) {
+                    List<String> tags = new ArrayList<>();
+                    JSONArray array = payload.optJSONArray(key);
+                    for (int i = 0; i < array.length(); i++) tags.add(array.optString(i));
+                    value = String.join(", ", tags);
+                  }
+                  draft.putString("field:" + key, value);
+                }
+                dialog.dismiss();
+                form.show(row.optString("endpoint"), null, draft);
+              }));
+    }
+    ui.add(
+        content,
+        ui.button(
             "Review retry",
-            (d, w) ->
-                new AlertDialog.Builder(this)
-                    .setTitle("Retry this entry?")
-                    .setMessage(
-                        cleanup
-                            ? "Retry removing this timer? Any already saved activity is kept."
-                            : "Confirm that the entry is missing from your server. If it is already"
-                                + " there, discard the pending copy instead.")
-                    .setPositiveButton(
-                        cleanup ? "Retry cleanup" : "Entry is missing — retry",
-                        (a, b) -> {
-                          if (!app.busy) {
+            false,
+            () -> {
+              dialog.dismiss();
+              new AlertDialog.Builder(this)
+                  .setTitle("Retry this entry?")
+                  .setMessage(
+                      cleanup
+                          ? "Retry removing this timer? Any already saved activity is kept."
+                          : "Confirm that the entry is missing from your server. If it is already"
+                              + " there, delete the pending copy instead.")
+                  .setPositiveButton(
+                      cleanup ? "Retry cleanup" : "Entry is missing - retry",
+                      (a, b) -> {
+                        if (!app.busy) {
+                          try {
                             app.store.state(id, "queued", "Waiting to sync");
                             app.sync();
-                          } else
-                            message(
-                                "Sync in progress",
-                                "Wait until syncing finishes before changing pending entries.");
-                        })
-                    .setNegativeButton("Cancel", null)
-                    .show())
-        .setNeutralButton(
-            "Discard…",
-            (d, w) ->
-                new AlertDialog.Builder(this)
-                    .setTitle("Discard pending entry?")
-                    .setMessage(
-                        "This removes the unsynced copy from this device. It does not delete a"
-                            + " server record.")
-                    .setPositiveButton(
-                        "Discard",
-                        (a, b) -> {
-                          if (!app.busy) {
+                            render();
+                          } catch (Exception e) {
+                            app.log(DiagnosticLog.Event.LOCAL_FAILURE, e);
+                            message("Could not retry", SyncEngine.friendly(e));
+                          }
+                        } else
+                          message(
+                              "Sync in progress",
+                              "Wait until syncing finishes before changing pending entries.");
+                      })
+                  .setNegativeButton("Cancel", null)
+                  .show();
+            }));
+    ui.add(
+        content,
+        ui.button(
+            "Delete pending entry",
+            false,
+            () -> {
+              dialog.dismiss();
+              new AlertDialog.Builder(this)
+                  .setTitle("Delete pending entry?")
+                  .setMessage(
+                      "This removes the unsynced copy from this device. It does not delete a server"
+                          + " record."
+                          + (cleanup || row.has("cleanup_timer")
+                              ? " The shared timer stays on the server."
+                              : ""))
+                  .setPositiveButton(
+                      "Delete pending copy",
+                      (a, b) -> {
+                        if (!app.busy) {
+                          try {
                             app.store.discard(id);
                             render();
-                          } else message("Sync in progress", "Wait until syncing finishes.");
-                        })
-                    .setNegativeButton("Keep", null)
-                    .show())
-        .setNegativeButton("Close", null)
-        .show();
+                          } catch (Exception e) {
+                            app.log(DiagnosticLog.Event.LOCAL_FAILURE, e);
+                            message("Could not delete", SyncEngine.friendly(e));
+                          }
+                        } else message("Sync in progress", "Wait until syncing finishes.");
+                      })
+                  .setNegativeButton("Keep", null)
+                  .show();
+            }));
+    ui.add(content, ui.button("Close", false, dialog::dismiss));
+    dialog.show();
   }
 
   private void disconnect() {

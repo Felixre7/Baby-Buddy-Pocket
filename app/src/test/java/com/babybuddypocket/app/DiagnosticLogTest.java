@@ -38,6 +38,24 @@ public class DiagnosticLogTest {
   }
 
   @Test
+  public void overlapCategoryKeepsDetailsUsefulWithoutPrivateRecordLinks() throws Exception {
+    DiagnosticLog log = new DiagnosticLog(new File(folder.getRoot(), "overlap.json"));
+    log.record(
+        DiagnosticLog.Event.SYNC_FAILED,
+        new ApiClient.HttpFailure(
+            400,
+            "Server returned 400. {\"non_field_errors\":[\"Another entry intersects the specified"
+                + " time period. <a href='https://secret.invalid/sleep/999'>Private"
+                + " Child</a>\"]}"));
+    String report = log.report();
+    assertTrue(report.contains("HTTP 400 fields=non_field_errors"));
+    assertTrue(report.contains("reason=OVERLAP"));
+    assertFalse(report.contains("secret.invalid"));
+    assertFalse(report.contains("Private Child"));
+    assertFalse(report.contains("999"));
+  }
+
+  @Test
   public void limitsEventsExpiresAndClearsAcrossRestart() throws Exception {
     File file = new File(folder.getRoot(), "log.json");
     AtomicLong now = new AtomicLong(1000000);

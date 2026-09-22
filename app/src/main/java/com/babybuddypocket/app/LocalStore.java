@@ -12,7 +12,7 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
   }
 
   LocalStore(Context context, String name) {
-    super(context, name, null, 4);
+    super(context, name, null, 5);
   }
 
   @Override
@@ -21,12 +21,13 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
     db.execSQL(
         "CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, endpoint TEXT NOT NULL, payload"
             + " TEXT NOT NULL, state TEXT NOT NULL, message TEXT NOT NULL, method TEXT NOT NULL"
-            + " DEFAULT 'POST', cleanup_timer INTEGER)");
+            + " DEFAULT 'POST', cleanup_timer INTEGER, cleanup_start TEXT)");
     createTimers(db);
   }
 
   @Override
   public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+    if (oldVersion < 5) db.execSQL("ALTER TABLE outbox ADD COLUMN cleanup_start TEXT");
     if (oldVersion >= 2 && oldVersion < 4)
       db.execSQL(
           "ALTER TABLE active_timers ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0");
@@ -314,6 +315,7 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
       long id = enqueue(endpoint, finished);
       ContentValues link = new ContentValues();
       link.put("cleanup_timer", timerId);
+      link.put("cleanup_start", finished.getString("start"));
       db.update("outbox", link, "id=?", new String[] {Long.toString(id)});
       db.setTransactionSuccessful();
     } finally {
@@ -327,8 +329,8 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
     try (Cursor cursor =
         getReadableDatabase()
             .rawQuery(
-                "SELECT id,endpoint,payload,state,message,method,cleanup_timer FROM outbox ORDER BY"
-                    + " id",
+                "SELECT id,endpoint,payload,state,message,method,cleanup_timer,cleanup_start FROM"
+                    + " outbox ORDER BY id",
                 null)) {
       while (cursor.moveToNext())
         rows.add(
@@ -339,7 +341,8 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
                 .put("state", cursor.getString(3))
                 .put("message", cursor.getString(4))
                 .put("method", cursor.getString(5))
-                .put("cleanup_timer", cursor.isNull(6) ? null : cursor.getLong(6)));
+                .put("cleanup_timer", cursor.isNull(6) ? null : cursor.getLong(6))
+                .put("cleanup_start", cursor.isNull(7) ? null : cursor.getString(7)));
     } catch (JSONException e) {
       throw new IllegalStateException(e);
     }
@@ -354,6 +357,27 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
     return getWritableDatabase()
             .update("outbox", values, "id=? AND state='queued'", new String[] {Long.toString(id)})
         == 1;
+  }
+
+  synchronized void editRejected(long id, JSONObject payload) throws Exception {
+    JSONObject existing = null;
+    for (JSONObject row : pending()) if (row.getLong("local_id") == id) existing = row;
+    if (existing == null || !SyncFeedback.canEdit(existing))
+      throw new IllegalArgumentException(
+          "This entry can no longer be edited. Check its current status in Settings.");
+    JSONObject original = existing.getJSONObject("payload");
+    if (payload.getLong("child") != original.getLong("child"))
+      throw new IllegalArgumentException("The entry belongs to another child.");
+    if (Records.timed(existing.getString("endpoint"))) FormValues.validateDuration(payload);
+    ContentValues values = new ContentValues();
+    values.put("payload", payload.toString());
+    values.put("state", "queued");
+    values.put("message", "Waiting to sync");
+    if (existing.has("cleanup_timer"))
+      values.put("cleanup_start", existing.optString("cleanup_start", original.getString("start")));
+    if (getWritableDatabase()
+            .update("outbox", values, "id=? AND state='rejected'", new String[] {Long.toString(id)})
+        != 1) throw new IllegalStateException("The entry changed while it was being edited.");
   }
 
   @Override
@@ -416,7 +440,10 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
                   "timers",
                   new JSONObject()
                       .put("id", pending.getLong("cleanup_timer"))
-                      .put("start", pending.getJSONObject("payload").getString("start"))
+                      .put(
+                          "start",
+                          pending.optString(
+                              "cleanup_start", pending.getJSONObject("payload").getString("start")))
                       .put("child", pending.getJSONObject("payload").getLong("child")));
           ContentValues deletion = new ContentValues();
           deletion.put("method", "DELETE");

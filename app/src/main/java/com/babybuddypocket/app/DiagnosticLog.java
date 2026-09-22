@@ -121,6 +121,7 @@ final class DiagnosticLog {
         ApiClient.HttpFailure http = (ApiClient.HttpFailure) cause;
         out.append(" HTTP ").append(http.status);
         if (!http.fields.isEmpty()) out.append(" fields=").append(http.fields);
+        out.append(" reason=").append(SyncFeedback.reason(http.status, http.getMessage()).name());
       }
       int frames = 0;
       for (StackTraceElement frame : cause.getStackTrace()) {

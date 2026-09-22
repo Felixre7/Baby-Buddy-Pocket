@@ -26,8 +26,31 @@ public final class ApiClient {
         int start = message.indexOf('{');
         JSONObject errors = new JSONObject(message.substring(start));
         for (String key :
-            new String[] {"child", "name", "start", "end", "user", "timer", "non_field_errors"})
-          if (errors.has(key)) names.add(key);
+            new String[] {
+              "child",
+              "name",
+              "start",
+              "end",
+              "time",
+              "date",
+              "user",
+              "timer",
+              "type",
+              "method",
+              "amount",
+              "nap",
+              "wet",
+              "solid",
+              "weight",
+              "height",
+              "head_circumference",
+              "temperature",
+              "bmi",
+              "notes",
+              "note",
+              "tags",
+              "non_field_errors"
+            }) if (errors.has(key)) names.add(key);
       } catch (Exception ignored) {
       }
       fields = String.join(",", names);

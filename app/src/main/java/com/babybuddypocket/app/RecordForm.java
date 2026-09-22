@@ -22,6 +22,7 @@ final class RecordForm {
   private long child;
   private boolean startingTimer;
   private Long localTimer;
+  private Long pendingEntry;
 
   RecordForm(MainActivity activity, Ui ui, AppController app) {
     this.activity = activity;
@@ -45,6 +46,7 @@ final class RecordForm {
     out.putBoolean("startingTimer", startingTimer);
     if (localTimer != null) out.putLong("localTimer", localTimer);
     if (timer != null) out.putLong("timer", timer);
+    if (pendingEntry != null) out.putLong("pendingEntry", pendingEntry);
     for (Map.Entry<String, Supplier<String>> entry : readers.entrySet())
       out.putString("field:" + entry.getKey(), entry.getValue().get());
     return out;
@@ -60,6 +62,10 @@ final class RecordForm {
     }
     this.endpoint = endpoint;
     this.timer = timer;
+    pendingEntry =
+        restored != null && restored.containsKey("pendingEntry")
+            ? restored.getLong("pendingEntry")
+            : null;
     startingTimer =
         restored == null
             ? timer == null && Records.timed(endpoint)
@@ -69,20 +75,19 @@ final class RecordForm {
             ? restored.getLong("localTimer")
             : null;
     this.child = restored == null ? app.child() : restored.getLong("child", app.child());
+    String childName = "this child";
+    JSONArray children = app.data.optJSONArray("children");
+    if (children != null)
+      for (int i = 0; i < children.length(); i++)
+        if (children.optJSONObject(i).optLong("id") == child)
+          childName = Records.text(children.optJSONObject(i), "first_name");
     readers.clear();
     LinearLayout content = ui.column();
     content.setPadding(ui.dp(22), ui.dp(8), ui.dp(22), ui.dp(20));
     ui.add(
         content,
         ui.text(
-            app.demo
-                ? "Sample entry · stays in demo"
-                : "For "
-                    + Records.text(app.childRecord(), "first_name")
-                    + " · saved locally before syncing",
-            13,
-            ui.muted,
-            false));
+            app.demo ? "Sample entry · stays in demo" : "For " + childName, 13, ui.muted, false));
     ui.gap(content, 16);
     if (timer != null) {
       ui.add(
@@ -95,7 +100,7 @@ final class RecordForm {
               14));
       ui.gap(content, 16);
     }
-    if (timer == null && localTimer == null && Records.timed(endpoint)) {
+    if (timer == null && localTimer == null && pendingEntry == null && Records.timed(endpoint)) {
       Switch mode = new Switch(activity);
       mode.setText(R.string.start_timer_now);
       mode.setTextColor(ui.ink);
@@ -271,14 +276,18 @@ final class RecordForm {
     dialog =
         new AlertDialog.Builder(activity)
             .setTitle(
-                (startingTimer ? "Time " : timer == null ? "Log " : "Finish as ")
+                (pendingEntry != null
+                        ? "Edit "
+                        : startingTimer ? "Time " : timer == null ? "Log " : "Finish as ")
                     + Records.title(endpoint).toLowerCase(Locale.ROOT))
             .setView(scroll)
             .create();
     ui.add(
         content,
         ui.button(
-            startingTimer ? "Start timer" : app.demo ? "Add sample" : "Save entry",
+            pendingEntry != null
+                ? "Save changes"
+                : startingTimer ? "Start timer" : app.demo ? "Add sample" : "Save entry",
             true,
             () -> {
               try {
@@ -290,7 +299,8 @@ final class RecordForm {
                   values.put("end", now);
                 }
                 JSONObject payload = FormValues.parse(schema, values, child, timer);
-                if (startingTimer) app.startTimer(endpoint, payload);
+                if (pendingEntry != null) app.editPending(pendingEntry, payload);
+                else if (startingTimer) app.startTimer(endpoint, payload);
                 else if (localTimer != null) app.finishTimer(localTimer, payload);
                 else app.add(endpoint, payload);
                 app.activities().remember(endpoint, child, schema, values);
@@ -300,7 +310,7 @@ final class RecordForm {
                         activity,
                         startingTimer
                             ? (app.demo ? "Sample timer started" : "Timer started")
-                            : app.demo ? "Sample added" : "Saved on this device",
+                            : app.demo ? "Sample added" : "Activity saved",
                         Toast.LENGTH_SHORT)
                     .show();
               } catch (Exception e) {
