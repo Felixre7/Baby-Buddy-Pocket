@@ -7,8 +7,8 @@ android {
         applicationId 'com.babybuddypocket.app'
         minSdk 26
         targetSdk 36
-        versionCode 16
-        versionName '0.1.15'
+        versionCode 17
+        versionName '0.1.16'
         testInstrumentationRunner project.findProperty('liveSyncTest') == 'true' ?
             'com.babybuddypocket.app.LiveSyncInstrumentation' : 'com.babybuddypocket.app.SmokeInstrumentation'
     }
@@ -21,6 +21,15 @@ android {
     }
     lint { abortOnError true }
 }
+
+// Bundle the canonical project notices without maintaining a second license copy.
+def legalAssets = layout.buildDirectory.dir('generated/legalAssets')
+def copyLegalNotices = tasks.register('copyLegalNotices', Copy) {
+    from(rootProject.projectDir) { include 'LICENSE', 'NOTICE' }
+    into(legalAssets)
+}
+android.sourceSets.main.assets.srcDir(legalAssets)
+tasks.named('preBuild').configure { dependsOn(copyLegalNotices) }
 
 // One standalone runtime library for on-device QR decoding; no camera/UI framework.
 dependencies {

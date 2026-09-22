@@ -468,7 +468,7 @@ public final class MainActivity extends Activity {
       ui.add(page, quick);
       ui.gap(page, 12);
     }
-    ui.add(page, ui.button("＋  Log activity", true, () -> chooseLog(null)));
+    ui.add(page, ui.button("Log activity", true, () -> chooseLog(null)));
     rows = activityRows();
     ui.section(page, "LATEST MOMENTS");
     if (rows.isEmpty())
@@ -661,12 +661,14 @@ public final class MainActivity extends Activity {
           ui.text(
               type.equals("all") ? "All activities" : Records.title(type),
               12,
-              type.equals(filter) ? (ui.dark ? ui.background : Color.WHITE) : ui.muted,
+              type.equals(filter) ? ui.accent : ui.muted,
               true);
       chip.setPadding(ui.dp(14), ui.dp(14), ui.dp(14), ui.dp(14));
       chip.setMinHeight(ui.dp(48));
       chip.setGravity(Gravity.CENTER);
-      chip.setBackground(ui.shape(type.equals(filter) ? ui.accent : ui.surface, 18));
+      chip.setBackground(ui.shape(type.equals(filter) ? ui.soft : ui.surface, 18));
+      chip.setSelected(type.equals(filter));
+      chip.setContentDescription("Filter: " + chip.getText());
       LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-2, -2);
       p.rightMargin = ui.dp(8);
       chips.addView(chip, p);
@@ -681,7 +683,15 @@ public final class MainActivity extends Activity {
     filters.addView(chips);
     ui.add(page, filters);
     ui.gap(page, 12);
-    ui.add(page, ui.button("＋  Log activity", true, () -> chooseLog(null)));
+    ui.add(
+        page,
+        ui.button(
+            "Log activity",
+            true,
+            () -> {
+              if (!filter.equals("all") && app.schema(filter) != null) log(filter, null);
+              else chooseLog(null);
+            }));
     ui.gap(page, 14);
     timelineRows = ui.column();
     ui.add(page, timelineRows);

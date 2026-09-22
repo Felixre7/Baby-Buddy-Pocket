@@ -1,0 +1,12 @@
+Baby Buddy Pocket
+Copyright (c) 2026 Baby Buddy Pocket contributors.
+
+This software is licensed under the GNU General Public License, version 3 only
+(GPL-3.0-only). You may redistribute and modify it under those terms.
+There is no warranty, including merchantability or fitness for a particular purpose.
+The complete license is included in LICENSE.
+
+Project source: https://github.com/Felixre7/Baby-Buddy-Pocket
+The matching corresponding source archive is supplied alongside release binaries.
+Third-party components retain their own licenses, including the bundled
+ZXING-LICENSE.txt and ZXING-NOTICE.txt for ZXing (Apache-2.0).

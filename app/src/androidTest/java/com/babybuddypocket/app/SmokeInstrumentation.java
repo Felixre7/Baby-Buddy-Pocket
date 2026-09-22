@@ -80,6 +80,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       pause();
       capture("03-timeline");
       check(awaitText("Search notes"), "Timeline has search");
+      filteredLogging();
       click("Trends");
       pause();
       check(awaitText("past seven days"), "Trends visible");
@@ -957,6 +958,58 @@ public final class SmokeInstrumentation extends Instrumentation {
     check(awaitText("Stop & save"), "Conflict action returns directly to the existing timer");
     click("Cancel timer");
     click("Cancel timer");
+  }
+
+  private void filteredLogging() throws Exception {
+    click("Log activity");
+    check(awaitText("Choose your activities"), "All activities still opens the activity picker");
+    click("Back");
+    click("Filter: Feeding");
+    pause();
+    boolean selected = false;
+    for (AccessibilityNodeInfo node : nodes(uiRoot()))
+      if ("Filter: Feeding".contentEquals(String.valueOf(node.getContentDescription())))
+        selected = node.isSelected();
+    check(selected, "The active Timeline filter is exposed to accessibility");
+    capture("03-timeline-filtered");
+    click("Log activity");
+    check(awaitText("Time feeding"), "Filtered Timeline opens the matching timed form directly");
+    check(checked("Start a timer now"), "Direct logging retains the timer default");
+    click("Cancel");
+    click("Today");
+    click("Log activity");
+    check(awaitText("Choose your activities"), "Timeline filter does not constrain Today logging");
+    click("Back");
+    click("Timeline");
+    AppController app = AppController.get(getTargetContext());
+    JSONObject schemas = app.data.optJSONObject("_schemas");
+    JSONObject feeding = schemas.getJSONObject("feedings");
+    runOnMainSync(() -> schemas.remove("feedings"));
+    try {
+      click("Log activity");
+      check(
+          awaitText("Choose your activities"), "A read-only filter falls back to writable choices");
+      click("Back");
+    } finally {
+      runOnMainSync(
+          () -> {
+            try {
+              schemas.put("feedings", feeding);
+            } catch (JSONException e) {
+              throw new AssertionError(e);
+            }
+          });
+    }
+    click("Filter: Note");
+    click("Log activity");
+    check(awaitText("Log note"), "A non-timed filter opens its matching form directly");
+    setTextByHint("Required", "Filtered timeline sample");
+    click("Add sample");
+    click("Timeline");
+    check(
+        awaitText("Filtered timeline sample"), "Directly logged sample appears in the same filter");
+    click("Filter: All activities");
+    pause();
   }
 
   private void customizationFlow() throws Exception {

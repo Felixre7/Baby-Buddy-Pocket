@@ -23,7 +23,7 @@ The bundle is `app/build/outputs/bundle/release/app-release.aab`. It is **unsign
 
 Baby Buddy Pocket uses [GPL-3.0-only](../LICENSE). For each distributed APK or Play release, provide the exact corresponding source, including build scripts and required dependency source, with clear access instructions next to the binary download or store listing. A link to a moving development branch is not a substitute for the source that matches the released build. Keep release source available for as long as required by the license.
 
-Include the GPLv3 text, project copyright/no-warranty notice, and source location with the distribution; retain ZXing's Apache-2.0 license/notices and the Gradle wrapper notices. Verify these items in the actual release package and listing before publishing. See GPLv3 sections 4–6 in [LICENSE](../LICENSE) for the distribution requirements. Existing 0.1.15 artifacts predate this license change and have not been rebuilt or relicensed retroactively.
+Builds copy the root LICENSE and NOTICE into APK/AAB assets automatically. Include the GPLv3 text, project copyright/no-warranty notice, and source location with the distribution; retain ZXing's Apache-2.0 license/notices and the Gradle wrapper notices. Verify these items in the actual release package and listing before publishing. See GPLv3 sections 4–6 in [LICENSE](../LICENSE) for the distribution requirements. Existing 0.1.15 artifacts predate this license change and have not been rebuilt or relicensed retroactively.
 
 ## Before uploading
 
