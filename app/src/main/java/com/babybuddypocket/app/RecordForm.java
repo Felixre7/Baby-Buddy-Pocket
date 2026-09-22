@@ -255,6 +255,16 @@ final class RecordForm {
     TextView error = ui.text("", 14, Ui.color(ui.dark ? "#FFB4AB" : "#A53830"), false);
     error.setVisibility(View.GONE);
     ui.add(content, error);
+    View runningTimer =
+        ui.button(
+            "View running timer",
+            false,
+            () -> {
+              dialog.dismiss();
+              activity.logged();
+            });
+    runningTimer.setVisibility(View.GONE);
+    ui.add(content, runningTimer);
     ScrollView scroll = new ScrollView(activity);
     scroll.setFillViewport(false);
     scroll.addView(content);
@@ -297,6 +307,8 @@ final class RecordForm {
                 app.log(DiagnosticLog.Event.LOCAL_FAILURE, e);
                 error.setText(SyncEngine.friendly(e));
                 error.setVisibility(View.VISIBLE);
+                runningTimer.setVisibility(
+                    e instanceof AppController.TimerAlreadyRunning ? View.VISIBLE : View.GONE);
                 scroll.post(() -> scroll.smoothScrollTo(0, error.getTop()));
               }
             }));

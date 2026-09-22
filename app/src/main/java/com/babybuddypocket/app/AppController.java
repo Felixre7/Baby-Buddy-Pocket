@@ -200,19 +200,18 @@ public final class AppController {
   void startTimer(String endpoint, JSONObject payload) throws Exception {
     if (!Records.timed(endpoint))
       throw new IllegalArgumentException("This activity cannot be timed.");
+    List<JSONObject> pending = pending();
     for (JSONObject timer : timers())
-      if (!timer.optBoolean("cancel_requested")
-          && !timer.has("finish_payload")
-          && pending().stream()
-              .noneMatch(
-                  row ->
-                      row.optLong(
-                              "cleanup_timer", row.optJSONObject("payload").optLong("timer", -1))
-                          == timer.optLong("server_id", -2))
-          && timer.getString("endpoint").equals(endpoint)
+      if (TimerPolicy.runningLocal(timer, pending)
           && timer.getJSONObject("payload").getLong("child") == payload.getLong("child"))
-        throw new IllegalArgumentException(
-            "This activity already has a running timer. Stop it on Today first.");
+        throw new TimerAlreadyRunning();
+    JSONArray shared = data.optJSONArray("timers");
+    if (shared != null)
+      for (int i = 0; i < shared.length(); i++) {
+        JSONObject timer = shared.getJSONObject(i);
+        if (TimerPolicy.applies(timer, payload.getLong("child"))
+            && !TimerPolicy.ending(pending, timer.getLong("id"))) throw new TimerAlreadyRunning();
+      }
     JSONObject started = Records.copy(payload);
     started.remove("end");
     if (demo) {
@@ -240,6 +239,14 @@ public final class AppController {
     }
     changed();
     sync();
+  }
+
+  static final class TimerAlreadyRunning extends IllegalStateException {
+    TimerAlreadyRunning() {
+      super(
+          "A timer is already running. Finish or cancel it on Today before starting another."
+              + " You can still add a manual log.");
+    }
   }
 
   JSONObject timerOptions(long serverId) {

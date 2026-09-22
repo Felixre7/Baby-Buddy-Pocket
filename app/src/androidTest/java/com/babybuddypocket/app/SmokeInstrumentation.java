@@ -48,6 +48,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       database();
       serverTimers();
       rejectedTimersAndCancellation();
+      offlineTimerConflict();
       activityPreferences();
       credentials();
       getTargetContext()
@@ -112,6 +113,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       check(getUiAutomation().setRotation(originalRotation), "Original device rotation restored");
       pause();
       timerFlow();
+      timerConflictFlow();
       customizationFlow();
       diagnosticsFlow();
       syncPresentation();
@@ -517,6 +519,46 @@ public final class SmokeInstrumentation extends Instrumentation {
     getTargetContext().deleteDatabase(name);
   }
 
+  private void offlineTimerConflict() throws Exception {
+    String name = "timer-conflict-test.db";
+    getTargetContext().deleteDatabase(name);
+    LocalStore store = new LocalStore(getTargetContext(), name);
+    JSONObject payload =
+        new JSONObject()
+            .put("child", 1)
+            .put("nap", false)
+            .put("start", "2026-01-01T01:00:00Z")
+            .put("end", "2026-01-01T02:00:00Z");
+    store.startTimer("sleep", payload);
+    TimerServer server = new TimerServer();
+    server.timers.put(
+        new JSONObject()
+            .put("id", 99)
+            .put("child", 1)
+            .put("name", "Feeding")
+            .put("start", "2026-01-01T03:00:00Z"));
+    ApiClient api = new ApiClient("https://timers.invalid", "synthetic", server);
+    new SyncEngine(store, api).sync();
+    check(
+        server.starts == 0
+            && store.pending().get(0).getString("state").equals("rejected")
+            && store.timers().size() == 1,
+        "Offline conflict preserves the local timer without publishing another");
+    store.close();
+    store = new LocalStore(getTargetContext(), name);
+    store.finishTimer(store.timers().get(0).getLong("id"), payload);
+    new SyncEngine(store, api).sync();
+    check(
+        server.finishes == 1 && store.pending().isEmpty(),
+        "A separate local session remains saveable after restart and conflict");
+    check(
+        server.timers.getJSONObject(0).getLong("id") == 99,
+        "Saving the separate local session never removes the other caregiver's timer");
+    store.clear();
+    store.close();
+    getTargetContext().deleteDatabase(name);
+  }
+
   /** API fixture enforces non-overlapping sessions and the 24-hour duration limit. No network. */
   private static final class TimerServer implements ApiClient.Transport {
     boolean offline, loseStartReply, loseDeleteReply;
@@ -654,6 +696,45 @@ public final class SmokeInstrumentation extends Instrumentation {
     check(
         app.data.getJSONArray("sleep").length() == before + 1,
         "Cancel button does not save an activity");
+  }
+
+  private void timerConflictFlow() throws Exception {
+    AppController app = AppController.get(getTargetContext());
+    JSONObject start =
+        new JSONObject()
+            .put("child", app.child())
+            .put("nap", false)
+            .put("start", java.time.Instant.now().toString());
+    runOnMainSync(
+        () -> {
+          try {
+            app.startTimer("sleep", start);
+            boolean blocked = false;
+            try {
+              app.startTimer("tummy-times", start);
+            } catch (AppController.TimerAlreadyRunning expected) {
+              blocked = true;
+            }
+            check(
+                blocked && app.timers().size() == 1,
+                "Different activity cannot start a second timer for this child");
+            app.startTimer("sleep", Records.copy(start).put("child", 2));
+            check(app.timers().size() == 2, "Another child can have a timer simultaneously");
+            app.cancelTimer(app.timers().get(1).getLong("id"));
+          } catch (Exception e) {
+            throw new RuntimeException(e);
+          }
+        });
+    click("Log activity");
+    click("Sleep");
+    click("Start timer");
+    check(awaitText("A timer is already running"), "Conflicting start explains the existing timer");
+    check(app.timers().size() == 1, "Blocked form does not create another timer");
+    capture("18-existing-timer");
+    click("View running timer");
+    check(awaitText("Stop & save"), "Conflict action returns directly to the existing timer");
+    click("Cancel timer");
+    click("Cancel timer");
   }
 
   private void customizationFlow() throws Exception {
@@ -874,6 +955,49 @@ public final class SmokeInstrumentation extends Instrumentation {
       check(
           server.finishes == 2 && app.store.pending().isEmpty(),
           "Both offline sessions finish exactly once after reconnect");
+      JSONObject remote =
+          new JSONObject()
+              .put("id", 901)
+              .put("child", app.child())
+              .put("name", "Feeding")
+              .put("start", java.time.Instant.now().minusSeconds(60).toString());
+      runOnMainSync(
+          () -> {
+            try {
+              app.data = app.store.snapshot();
+              app.data.put("timers", new JSONArray().put(remote));
+              boolean blocked = false;
+              try {
+                app.startTimer("sleep", timed);
+              } catch (AppController.TimerAlreadyRunning expected) {
+                blocked = true;
+              }
+              check(
+                  blocked && app.store.timers().isEmpty(),
+                  "Cached timer from another caregiver blocks a different activity");
+              app.data
+                  .getJSONArray("timers")
+                  .put(Records.copy(remote).put("id", 902).put("name", "Sleep"));
+              app.listener.run();
+            } catch (Exception e) {
+              throw new RuntimeException(e);
+            }
+          });
+      check(
+          awaitText("Multiple timers found"),
+          "Simultaneous server timers have an explicit conflict notice");
+      check(
+          app.pending().isEmpty() && app.data.getJSONArray("timers").length() == 2,
+          "Conflicting server timers are never automatically removed or merged");
+      capture("19-timer-conflict");
+      click("Cancel timer");
+      click("Cancel timer");
+      check(
+          app.pending().size() == 1 && app.pending().get(0).getString("method").equals("DELETE"),
+          "Explicit conflict cancellation queues removal of one timer only");
+      check(
+          !contains("Multiple timers found") && contains("Finish & log"),
+          "Remaining timer stays accessible after choosing an extra timer to cancel");
     } finally {
       runOnMainSync(
           () -> {

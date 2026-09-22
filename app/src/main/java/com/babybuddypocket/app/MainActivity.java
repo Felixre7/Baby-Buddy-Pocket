@@ -468,6 +468,31 @@ public final class MainActivity extends Activity {
   }
 
   private void timers() {
+    List<JSONObject> pendingRows = app.pending();
+    JSONArray timers = app.data.optJSONArray("timers");
+    int running = 0;
+    for (JSONObject timer : app.timers())
+      if (!timer.has("server_id")
+          && TimerPolicy.runningLocal(timer, pendingRows)
+          && timer.optJSONObject("payload").optLong("child") == app.child()) running++;
+    if (timers != null)
+      for (int i = 0; i < timers.length(); i++) {
+        JSONObject timer = timers.optJSONObject(i);
+        if (TimerPolicy.applies(timer, app.child())
+            && !TimerPolicy.ending(pendingRows, timer.optLong("id"))) running++;
+      }
+    boolean conflict = running > 1;
+    if (conflict) {
+      LinearLayout notice = ui.card(page, 20);
+      ui.add(notice, ui.text("Multiple timers found", 18, ui.ink, true));
+      ui.add(
+          notice,
+          ui.text(
+              "Another device may have started a timer too. Review the timers below."
+                  + " Cancel an extra timer, or stop and save only if it is a separate session."
+                  + " Nothing is merged automatically.",
+              14));
+    }
     for (JSONObject timer : app.timers()) {
       if (timer.has("server_id")
           || timer.has("finish_payload")
@@ -475,27 +500,24 @@ public final class MainActivity extends Activity {
       JSONObject payload = timer.optJSONObject("payload");
       if (payload.optLong("child") != app.child()) continue;
       LinearLayout card =
-          timerCard(Records.title(timer.optString("endpoint")), Records.time(payload));
+          timerCard(
+              (conflict ? "Only on this phone · " : "")
+                  + Records.title(timer.optString("endpoint")),
+              Records.time(payload));
       timerActions(card, timer, false);
     }
-    JSONArray timers = app.data.optJSONArray("timers");
     if (timers == null) return;
     for (int i = 0; i < timers.length(); i++) {
       JSONObject timer = timers.optJSONObject(i);
-      if (timer.optLong("child", app.child()) != app.child()) continue;
+      if (!TimerPolicy.applies(timer, app.child())) continue;
       long serverId = timer.optLong("id");
-      boolean pending =
-          app.pending().stream()
-              .anyMatch(
-                  row ->
-                      row.optLong(
-                              "cleanup_timer", row.optJSONObject("payload").optLong("timer", -1))
-                          == serverId);
+      boolean pending = TimerPolicy.ending(pendingRows, serverId);
       JSONObject options = app.timerOptions(serverId);
       if (pending || (options != null && options.optBoolean("cancel_requested"))) continue;
       LinearLayout card =
           timerCard(
-              Records.text(timer, "name").isEmpty() ? "Timer" : Records.text(timer, "name"),
+              (conflict ? "Shared · " : "")
+                  + (Records.text(timer, "name").isEmpty() ? "Timer" : Records.text(timer, "name")),
               Records.time(timer));
       if (options == null) {
         ui.add(card, ui.button("Finish & log…", true, () -> chooseLog(serverId)));

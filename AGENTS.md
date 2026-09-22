@@ -7,9 +7,17 @@ The public app name is **Baby Buddy Pocket**. The Android identity is `com.babyb
 - The user's explicit priority is useful functionality and simplicity over almost everything. Optimize for maintainability, responsiveness, easy self-builds, and few dependencies rather than feature count.
 - Challenge suggestions that introduce disproportionate complexity, extra services, special cases, or maintenance. Explain the tradeoff briefly and suggest a simpler, faster option before implementing substantial additions. Do not turn every routine decision into an approval request.
 - Reliable offline logging is essential. Start and stop actions must persist locally and recover after restart; exact cross-device timing is secondary. Shared timers must not sacrifice durable offline logs or silently retry ambiguous writes.
+- Allow one running timer per child across all activities. Check known timers and recheck before publishing; preserve offline conflicts for an explicit user choice. Different children and manual logs remain independent. Never claim client-only checks guarantee atomic cross-device starts or finishes.
 - Prefer existing platform capabilities and shared code. Add abstractions or dependencies only when they make the implementation meaningfully simpler or support necessary functionality. Keep correctness and data integrity intact.
 - Remove code, resources, flags, tests, and temporary helpers made obsolete by a change instead of leaving dormant paths. Check indirect callers, Android callbacks, queued/offline paths, and upgrade requirements before declaring code unused. Keep necessary migration cleanup and meaningful regression coverage.
 - The demo is local synthetic practice data only. The public demo was removed at the user's request because its login, network, cache, and mode logic added complexity without enough benefit. Do not reintroduce it by default.
+
+## Testing and APK delivery
+
+- For ordinary updates, features, and bug fixes, concentrate initial emulator testing on **Pixel 9 Pro with the latest stable Android image available**. State the actual Android/API version tested; do not imply a newer version was tested merely because the phone profile matches.
+- Run focused unit/build checks and the relevant Pixel 9 Pro checks, then package and deliver the APK for physical-phone testing promptly. Do not hold the first test APK for the full compatibility matrix.
+- Continue older-Android and other device/layout tests in parallel after the APK is available. Report their results separately; if they uncover an app bug, fix it and deliver a new identifiable build.
+- Run broader checks when the change warrants them, rather than repeating the entire device matrix for every small change. Keep the Obsidian changelog clear about which checks were complete when an APK was first delivered and which finished afterward.
 
 ## Changelog maintenance
 

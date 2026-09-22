@@ -104,6 +104,32 @@ public final class SyncEngine {
         }
       }
       JSONObject payload = item.getJSONObject("payload");
+      if (endpoint.equals("timers")) {
+        // Read immediately before creating, not just from the last full snapshot.
+        // A failed read leaves the start queued and usable offline, without sending it.
+        JSONArray running = api.list("timers");
+        boolean waitForCleanup = false, conflict = false;
+        for (int i = 0; i < running.length(); i++) {
+          JSONObject timer = running.getJSONObject(i);
+          if (!TimerPolicy.applies(timer, payload.getLong("child"))) continue;
+          boolean ending = false;
+          for (JSONObject row : store.pending())
+            if (row.optLong("cleanup_timer", -1) == timer.getLong("id")
+                && row.optString("state").equals("queued")) ending = true;
+          if (ending) waitForCleanup = true;
+          else conflict = true;
+        }
+        if (conflict) {
+          // Claim first: the user may have stopped/cancelled during the GET.
+          if (store.claim(id)) {
+            store.state(id, "rejected", TimerPolicy.CONFLICT);
+            log(DiagnosticLog.Event.TIMER_CONFLICT, null);
+          }
+          continue;
+        }
+        // A previous local Stop/Cancel owns its cleanup. Send that before the next start.
+        if (waitForCleanup) continue;
+      }
       if (endpoint.equals("timers") || Records.timed(endpoint)) {
         JSONObject adjusted = api.timerTimes(payload, item.has("cleanup_timer"));
         if (!adjusted.optString("start").equals(payload.optString("start"))
