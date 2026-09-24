@@ -7,14 +7,23 @@ android {
         applicationId 'com.babybuddypocket.app'
         minSdk 26
         targetSdk 36
-        versionCode 19
-        versionName '0.1.18'
+        versionCode 22
+        versionName '0.1.21'
         testInstrumentationRunner project.findProperty('liveSyncTest') == 'true' ?
             'com.babybuddypocket.app.LiveSyncInstrumentation' : 'com.babybuddypocket.app.SmokeInstrumentation'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+    }
+    // Point to the preserved debug key when building on another computer.
+    def debugKeystore = providers.environmentVariable('BBP_DEBUG_KEYSTORE').orNull
+    if (debugKeystore) {
+        def keyFile = file(debugKeystore)
+        if (!keyFile.isFile()) {
+            throw new GradleException("BBP_DEBUG_KEYSTORE must point to an existing debug keystore")
+        }
+        signingConfigs.debug.storeFile = keyFile
     }
     buildTypes {
         release { minifyEnabled false }

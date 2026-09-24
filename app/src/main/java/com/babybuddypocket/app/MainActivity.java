@@ -98,6 +98,7 @@ public final class MainActivity extends Activity {
                 if (choosingActivity) navigate(tab);
                 else finish();
               });
+    openTimerIntent(getIntent());
     render();
     if (state != null && state.getBundle("form") != null) {
       pendingForm = state.getBundle("form");
@@ -118,10 +119,52 @@ public final class MainActivity extends Activity {
   @Override
   protected void onResume() {
     super.onResume();
-    app.listener = this::render;
+    app.listener =
+        () -> {
+          render();
+          requestTimerNotifications();
+        };
+    app.refreshNotifications();
+    requestTimerNotifications();
     render();
     if (pendingForm == null && !form.visible()) app.sync();
     handler.postDelayed(refresh, 60000);
+  }
+
+  private void requestTimerNotifications() {
+    if (Build.VERSION.SDK_INT < 33
+        || app.demo
+        || app.preferences.getBoolean("notification_permission_requested", false)
+        || checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+            == android.content.pm.PackageManager.PERMISSION_GRANTED
+        || TimerNotifications.running(app.data, app.timers(), app.pending()).isEmpty()) return;
+    app.preferences.edit().putBoolean("notification_permission_requested", true).apply();
+    requestPermissions(new String[] {android.Manifest.permission.POST_NOTIFICATIONS}, 32);
+  }
+
+  @Override
+  public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+    super.onRequestPermissionsResult(request, permissions, results);
+    if (request == 32) app.refreshNotifications();
+  }
+
+  private void openTimerIntent(Intent intent) {
+    if (intent == null || !TimerNotifications.OPEN.equals(intent.getAction())) return;
+    long child = intent.getLongExtra("child", -1);
+    if (child > 0) app.selectChild(child);
+    tab = 0;
+    choosingActivity = false;
+    finishingTimer = null;
+    intent.setAction(null);
+  }
+
+  @Override
+  protected void onNewIntent(Intent intent) {
+    super.onNewIntent(intent);
+    setIntent(intent);
+    // Preserve an open edit/log draft. Today is selected underneath it.
+    openTimerIntent(intent);
+    render();
   }
 
   @Override
@@ -787,7 +830,9 @@ public final class MainActivity extends Activity {
             ? "Demo entry"
             : pending == null
                 ? "Synced"
-                : attention ? SyncFeedback.label(pending) : "Saved on this phone; waiting to sync";
+                : attention || ActivityDeletions.isDeletion(pending)
+                    ? SyncFeedback.label(pending)
+                    : "Saved on this phone; waiting to sync";
     TextView symbol =
         ui.text(
             app.demo ? "◇" : pending == null ? "✓" : attention ? "!" : "○",
@@ -942,6 +987,22 @@ public final class MainActivity extends Activity {
           ui.button("Pending entries (" + app.pending().size() + ")", false, this::pending));
     }
     ui.add(page, ui.button("Report a problem", false, this::diagnostics));
+    ui.add(
+        page,
+        ui.button(
+            "Timer notifications",
+            false,
+            () -> {
+              Intent settings =
+                  new Intent(
+                          Build.VERSION.SDK_INT >= 36
+                              ? android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS
+                              : android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                      .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName())
+                      .putExtra(
+                          android.provider.Settings.EXTRA_CHANNEL_ID, TimerNotifications.CHANNEL);
+              startActivity(settings);
+            }));
     ui.section(page, "MEASUREMENT LABELS");
     LinearLayout units = ui.card(page, 18);
     ui.add(
@@ -1230,18 +1291,68 @@ public final class MainActivity extends Activity {
     }
     TextView text = ui.text(body.toString(), 15);
     text.setTextIsSelectable(true);
-    text.setPadding(ui.dp(22), ui.dp(8), ui.dp(22), ui.dp(22));
+    LinearLayout content = ui.column();
+    content.setPadding(ui.dp(22), ui.dp(8), ui.dp(22), ui.dp(22));
     ScrollView view = new ScrollView(this);
-    view.addView(text);
-    AlertDialog.Builder builder =
+    view.addView(content);
+    AlertDialog dialog =
         new AlertDialog.Builder(this)
             .setTitle(Records.title(row.optString("_type")))
             .setView(view)
-            .setPositiveButton("Done", null);
-    if (app.schema(row.optString("_type")) != null)
-      builder.setNeutralButton(
-          "Edit activity", (d, w) -> form.edit(row.optString("_type"), row, null, row));
-    builder.show();
+            .setPositiveButton("Done", null)
+            .create();
+    if (app.schema(row.optString("_type")) != null) {
+      ui.add(
+          content,
+          ui.button(
+              "Edit activity",
+              false,
+              () -> {
+                dialog.dismiss();
+                form.edit(row.optString("_type"), row, null, row);
+              }));
+      ui.gap(content, 8);
+    }
+    ui.add(
+        content,
+        ui.button(
+            "Delete activity",
+            false,
+            () -> {
+              dialog.dismiss();
+              confirmDeletion(row);
+            }));
+    ui.gap(content, 16);
+    ui.add(content, text);
+    dialog.show();
+  }
+
+  private void confirmDeletion(JSONObject row) {
+    new AlertDialog.Builder(this)
+        .setTitle("Delete this activity?")
+        .setMessage(
+            app.demo
+                ? "Remove this sample activity?"
+                : "This deletes the activity from your Baby Buddy server for all caregivers. If"
+                    + " offline, the request is saved until you reconnect. This cannot be"
+                    + " undone.")
+        .setNegativeButton("Keep activity", null)
+        .setPositiveButton(
+            "Delete activity",
+            (d, w) -> {
+              try {
+                app.deleteActivity(row.getString("_type"), row);
+                Toast.makeText(
+                        this,
+                        app.demo ? "Sample deleted" : "Deletion requested",
+                        Toast.LENGTH_SHORT)
+                    .show();
+              } catch (Exception e) {
+                app.log(DiagnosticLog.Event.LOCAL_FAILURE, e);
+                message("Could not delete", SyncEngine.friendly(e));
+              }
+            })
+        .show();
   }
 
   private void diagnostics() {
@@ -1367,7 +1478,8 @@ public final class MainActivity extends Activity {
     String[] names = new String[rows.size()];
     for (int i = 0; i < rows.size(); i++)
       names[i] =
-          (rows.get(i).optString("method").equals("DELETE")
+          ((rows.get(i).optString("method").equals("DELETE")
+                      && !ActivityDeletions.isDeletion(rows.get(i)))
                   ? "Timer cleanup"
                   : Records.title(rows.get(i).optString("endpoint")))
               + " · "
@@ -1383,7 +1495,8 @@ public final class MainActivity extends Activity {
     long id = row.optLong("local_id");
     JSONObject payload =
         Records.put(Records.copy(row.optJSONObject("payload")), "_type", row.optString("endpoint"));
-    boolean cleanup = row.optString("method").equals("DELETE");
+    boolean deletion = ActivityDeletions.isDeletion(row);
+    boolean cleanup = row.optString("method").equals("DELETE") && !deletion;
     LinearLayout content = ui.column();
     content.setPadding(ui.dp(22), ui.dp(8), ui.dp(22), ui.dp(20));
     ui.add(content, ui.text(SyncFeedback.pending(row), 16));
@@ -1401,11 +1514,14 @@ public final class MainActivity extends Activity {
     ui.add(
         content,
         ui.text(
-            cleanup
-                ? "Deleting this pending entry leaves the timer on the server. Any saved activity"
-                    + " is kept."
-                : "Delete pending entry removes only this device's unsynced copy. Server records"
-                    + " stay intact.",
+            deletion
+                ? "Discarding this request stops further deletion attempts. It cannot restore an"
+                    + " activity already deleted on the server."
+                : cleanup
+                    ? "Deleting this pending entry leaves the timer on the server. Any saved"
+                        + " activity is kept."
+                    : "Delete pending entry removes only this device's unsynced copy. Server"
+                        + " records stay intact.",
             14,
             ui.muted,
             false));
@@ -1441,12 +1557,18 @@ public final class MainActivity extends Activity {
               new AlertDialog.Builder(this)
                   .setTitle("Retry this entry?")
                   .setMessage(
-                      cleanup
-                          ? "Retry removing this timer? Any already saved activity is kept."
-                          : "Confirm that the entry is missing from your server. If it is already"
-                              + " there, delete the pending copy instead.")
+                      deletion
+                          ? "Check the server first. Retry deleting this activity? If it is already"
+                              + " gone, the request will be cleared. Changed records still need"
+                              + " review."
+                          : cleanup
+                              ? "Retry removing this timer? Any already saved activity is kept."
+                              : "Confirm that the entry is missing from your server. If it is"
+                                  + " already there, delete the pending copy instead.")
                   .setPositiveButton(
-                      cleanup ? "Retry cleanup" : "Entry is missing - retry",
+                      deletion
+                          ? "Retry deletion"
+                          : cleanup ? "Retry cleanup" : "Entry is missing - retry",
                       (a, b) -> {
                         if (!app.busy) {
                           try {
@@ -1468,20 +1590,23 @@ public final class MainActivity extends Activity {
     ui.add(
         content,
         ui.button(
-            "Delete pending entry",
+            deletion ? "Discard deletion request" : "Delete pending entry",
             false,
             () -> {
               dialog.dismiss();
               new AlertDialog.Builder(this)
-                  .setTitle("Delete pending entry?")
+                  .setTitle(deletion ? "Discard deletion request?" : "Delete pending entry?")
                   .setMessage(
-                      "This removes the unsynced copy from this device. It does not delete a server"
-                          + " record."
-                          + (cleanup || row.has("cleanup_timer")
-                              ? " The shared timer stays on the server."
-                              : ""))
+                      deletion
+                          ? "Stop attempting this deletion? Any deletion already accepted by the"
+                              + " server is permanent. This does not restore the activity."
+                          : "This removes the unsynced copy from this device. It does not delete a"
+                              + " server record."
+                              + (cleanup || row.has("cleanup_timer")
+                                  ? " The shared timer stays on the server."
+                                  : ""))
                   .setPositiveButton(
-                      "Delete pending copy",
+                      deletion ? "Discard request" : "Delete pending copy",
                       (a, b) -> {
                         if (!app.busy) {
                           try {
@@ -1568,11 +1693,7 @@ public final class MainActivity extends Activity {
   }
 
   private static String relative(Instant instant) {
-    long seconds = Duration.between(instant, Instant.now()).getSeconds();
-    if (seconds < 60) return "just now";
-    if (seconds < 3600) return (seconds / 60) + "m ago";
-    if (seconds < 86400) return (seconds / 3600) + "h ago";
-    return (seconds / 86400) + "d ago";
+    return Records.relative(instant, Instant.now());
   }
 
   private static String dayLabel(Instant time) {

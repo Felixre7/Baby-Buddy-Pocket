@@ -84,6 +84,13 @@ final class SyncFeedback {
 
   static String pending(JSONObject row) {
     String state = row.optString("state"), raw = row.optString("message");
+    if (ActivityDeletions.isDeletion(row)) {
+      if (state.equals("queued")) return "Waiting to delete this activity from the server.";
+      if (state.equals("review"))
+        return "We couldn't confirm whether this activity was deleted. Check the server before"
+            + " retrying. Discarding this request does not restore a deleted activity.";
+      if (raw.equals(ActivityDeletions.CONFLICT)) return raw;
+    }
     if (state.equals("queued")) return "Waiting to sync.";
     if (state.equals("review"))
       return "We couldn't confirm whether this entry reached the server. It is still saved here."
@@ -98,7 +105,8 @@ final class SyncFeedback {
   }
 
   static String label(JSONObject row) {
-    if (row.optString("state").equals("queued")) return "Waiting to sync";
+    if (row.optString("state").equals("queued"))
+      return ActivityDeletions.isDeletion(row) ? "Deletion pending" : "Waiting to sync";
     if (row.optString("state").equals("review")) return "Check before retrying";
     if (reason(status(row.optString("message")), row.optString("message")) == Reason.OVERLAP)
       return "Times overlap";

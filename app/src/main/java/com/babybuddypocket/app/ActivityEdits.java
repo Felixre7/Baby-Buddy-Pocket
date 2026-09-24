@@ -54,7 +54,7 @@ final class ActivityEdits {
     List<JSONObject> rows = Records.timeline(data, child);
     for (JSONObject item : pending) {
       String type = item.optString("endpoint");
-      if (type.equals("timers") || item.optString("method").equals("DELETE")) continue;
+      if (type.equals("timers")) continue;
       JSONObject payload = item.optJSONObject("payload");
       if (payload == null || payload.optLong("child", -1) != child) continue;
       JSONObject original = item.optJSONObject("original");

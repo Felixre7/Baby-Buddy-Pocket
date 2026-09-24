@@ -362,6 +362,35 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
         == 1;
   }
 
+  synchronized void enqueueDeletion(String endpoint, JSONObject record) throws Exception {
+    JSONObject original = ActivityDeletions.original(record);
+    if (original.getLong("id") <= 0
+        || original.getLong("child") <= 0
+        || !Arrays.asList(Records.ENDPOINTS).contains(endpoint)
+        || endpoint.equals("timers")
+        || endpoint.equals("tags"))
+      throw new IllegalArgumentException("This activity cannot be deleted.");
+    for (JSONObject row : pending())
+      if (row.optString("endpoint").equals(endpoint)
+          && row.has("original")
+          && row.getJSONObject("original").getLong("id") == original.getLong("id"))
+        throw new IllegalArgumentException(
+            "This activity already has a pending change. Review it before deleting.");
+    SQLiteDatabase db = getWritableDatabase();
+    db.beginTransaction();
+    try {
+      long id = enqueue(endpoint, original);
+      ContentValues values = new ContentValues();
+      values.put("method", "DELETE");
+      values.put("original", original.toString());
+      values.put("message", "Waiting to delete activity.");
+      db.update("outbox", values, "id=?", new String[] {Long.toString(id)});
+      db.setTransactionSuccessful();
+    } finally {
+      db.endTransaction();
+    }
+  }
+
   synchronized void enqueueEdit(String endpoint, JSONObject original, JSONObject payload)
       throws Exception {
     if (original.getLong("id") <= 0 || payload.getLong("child") != original.getLong("child"))
@@ -371,7 +400,7 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
           && row.has("original")
           && row.getJSONObject("original").getLong("id") == original.getLong("id"))
         throw new IllegalArgumentException(
-            "This activity already has a pending edit. Open its pending copy to change it.");
+            "This activity already has a pending change. Open its pending copy to review it.");
     if (ActivityEdits.changes(original, payload).length() == 0) return;
     SQLiteDatabase db = getWritableDatabase();
     db.beginTransaction();
@@ -528,6 +557,26 @@ public final class LocalStore extends SQLiteOpenHelper implements SyncEngine.Sto
           if (timers.getJSONObject(i).optLong("id") != timerId)
             remaining.put(timers.getJSONObject(i));
       data.put("timers", remaining);
+      replace(data);
+      discard(id);
+      db.setTransactionSuccessful();
+    } finally {
+      db.endTransaction();
+    }
+  }
+
+  @Override
+  public synchronized void removedActivity(long id, String endpoint, long recordId)
+      throws Exception {
+    SQLiteDatabase db = getWritableDatabase();
+    db.beginTransaction();
+    try {
+      JSONObject data = snapshot();
+      JSONArray rows = data.optJSONArray(endpoint), remaining = new JSONArray();
+      if (rows != null)
+        for (int i = 0; i < rows.length(); i++)
+          if (rows.getJSONObject(i).optLong("id") != recordId) remaining.put(rows.getJSONObject(i));
+      data.put(endpoint, remaining);
       replace(data);
       discard(id);
       db.setTransactionSuccessful();

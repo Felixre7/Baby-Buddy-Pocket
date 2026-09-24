@@ -131,8 +131,14 @@ public final class ApiClient {
   }
 
   public void deleteTimer(long id) throws Exception {
+    deleteRecord("timers", id);
+  }
+
+  void deleteRecord(String endpoint, long id) throws Exception {
+    if (!java.util.Arrays.asList(Records.ENDPOINTS).contains(endpoint) || id <= 0)
+      throw new IllegalArgumentException("Invalid activity identity.");
     try {
-      transport.request("DELETE", safeUri("timers/" + id + "/"), token, null);
+      transport.request("DELETE", safeUri(endpoint + "/" + id + "/"), token, null);
     } catch (HttpFailure e) {
       if (e.status != 404) throw e;
     }

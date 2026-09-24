@@ -9,6 +9,41 @@ import org.junit.Test;
 
 public class RecordsAndFormsTest {
   @Test
+  public void activityAgesUseCompletedMinutesThroughTheFirstDay() {
+    Instant now = Instant.parse("2026-09-24T12:00:00Z");
+    long[] ages = {
+      -60, 0, 59, 60, 119, 3599, 3600, 3601, 3899, 7200, 8099, 43199, 43200, 44899, 67199, 86399,
+      86400, 172799, 172800
+    };
+    String[] expected = {
+      "just now",
+      "just now",
+      "just now",
+      "1m ago",
+      "1m ago",
+      "59m ago",
+      "1h 0m ago",
+      "1h 0m ago",
+      "1h 4m ago",
+      "2h 0m ago",
+      "2h 14m ago",
+      "11h 59m ago",
+      "12h 0m ago",
+      "12h 28m ago",
+      "18h 39m ago",
+      "23h 59m ago",
+      "1d ago",
+      "1d ago",
+      "2d ago"
+    };
+    for (int i = 0; i < ages.length; i++)
+      assertEquals(
+          "Age in seconds: " + ages[i],
+          expected[i],
+          Records.relative(now.minusSeconds(ages[i]), now));
+  }
+
+  @Test
   public void requiredFieldsLeadAndDurationTimesAreRequiredWithoutTimer() throws Exception {
     JSONObject schema = DemoData.create().getJSONObject("_schemas").getJSONObject("feedings");
     schema.getJSONObject("start").put("required", false);

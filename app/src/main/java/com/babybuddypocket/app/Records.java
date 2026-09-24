@@ -8,6 +8,15 @@ import org.json.*;
 public final class Records {
   private Records() {}
 
+  static String relative(Instant instant, Instant now) {
+    long seconds = Duration.between(instant, now).getSeconds();
+    if (seconds < 60) return "just now";
+    long minutes = seconds / 60;
+    if (minutes < 60) return minutes + "m ago";
+    if (minutes < 1440) return (minutes / 60) + "h " + (minutes % 60) + "m ago";
+    return (minutes / 1440) + "d ago";
+  }
+
   static boolean timed(String type) {
     return Arrays.asList("feedings", "sleep", "tummy-times", "pumping").contains(type);
   }

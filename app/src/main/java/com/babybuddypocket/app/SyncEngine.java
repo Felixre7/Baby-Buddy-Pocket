@@ -21,6 +21,10 @@ public final class SyncEngine {
       return true;
     }
 
+    default void removedActivity(long id, String endpoint, long recordId) throws Exception {
+      throw new UnsupportedOperationException();
+    }
+
     default void removed(long id, long timerId) throws Exception {
       throw new UnsupportedOperationException();
     }
@@ -48,6 +52,10 @@ public final class SyncEngine {
       if (!"queued".equals(item.optString("state"))) continue;
       long id = item.getLong("local_id");
       String endpoint = item.getString("endpoint");
+      if (ActivityDeletions.isDeletion(item)) {
+        deleteActivity(item);
+        continue;
+      }
       if (item.optString("method").equals("DELETE")) {
         // Deleting the same confirmed timer is safe to retry, including after a lost reply.
         try {
@@ -222,6 +230,48 @@ public final class SyncEngine {
     fresh.put("_synced", System.currentTimeMillis());
     // Replace only after every supported collection and every page succeeded.
     store.replace(fresh);
+  }
+
+  private void deleteActivity(JSONObject item) throws Exception {
+    long id = item.getLong("local_id");
+    String endpoint = item.getString("endpoint");
+    JSONObject original = item.getJSONObject("original");
+    long recordId = original.getLong("id");
+    try {
+      JSONObject current = api.object("GET", endpoint + "/" + recordId + "/", null);
+      if (!ActivityDeletions.matches(current, original)) {
+        if (store.claim(id)) store.state(id, "rejected", ActivityDeletions.CONFLICT);
+        return;
+      }
+    } catch (ApiClient.HttpFailure e) {
+      if (e.status == 404) {
+        if (store.claim(id)) store.removedActivity(id, endpoint, recordId);
+        return;
+      }
+      if (e.status >= 400 && e.status < 500 && e.status != 408) {
+        if (store.claim(id)) store.state(id, "rejected", e.getMessage());
+        log(DiagnosticLog.Event.WRITE_REJECTED, e);
+      }
+      throw e;
+    }
+    // Separate read/delete requests cannot atomically prevent another caregiver's changes.
+    // Persist uncertainty before sending; retry only after explicit review of a lost reply.
+    if (!store.claim(id)) return;
+    try {
+      api.deleteRecord(endpoint, recordId);
+      store.removedActivity(id, endpoint, recordId);
+      log(DiagnosticLog.Event.WRITE_ACCEPTED, null);
+    } catch (ApiClient.HttpFailure e) {
+      boolean rejected = e.status >= 400 && e.status < 500 && e.status != 408;
+      store.state(id, rejected ? "rejected" : "review", e.getMessage());
+      log(rejected ? DiagnosticLog.Event.WRITE_REJECTED : DiagnosticLog.Event.WRITE_UNCERTAIN, e);
+      if (e.status == 401 || e.status == 403) throw e;
+    } catch (Exception e) {
+      store.state(
+          id, "review", "Deletion could not be confirmed. Check the server before retrying.");
+      log(DiagnosticLog.Event.WRITE_UNCERTAIN, e);
+      throw e;
+    }
   }
 
   private void log(DiagnosticLog.Event event, Exception failure) {

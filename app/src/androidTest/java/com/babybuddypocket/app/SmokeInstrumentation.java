@@ -12,9 +12,9 @@ import org.json.*;
 /** Runs with the platform instrumentation API; no instrumentation libraries in the project. */
 public final class SmokeInstrumentation extends Instrumentation {
   private int assertions;
-  private boolean cleanTest;
+  private boolean cleanTest, featuresOnly;
   private String screenPrefix = "";
-  private String upgradePhase = "", scanMode = "";
+  private String upgradePhase = "", scanMode = "", timerPhase = "";
 
   @Override
   public void onCreate(Bundle args) {
@@ -22,6 +22,8 @@ public final class SmokeInstrumentation extends Instrumentation {
     screenPrefix = args == null ? "" : args.getString("prefix", "");
     upgradePhase = args == null ? "" : args.getString("upgrade", "");
     scanMode = args == null ? "" : args.getString("scan", "");
+    timerPhase = args == null ? "" : args.getString("timerLifecycle", "");
+    featuresOnly = args != null && args.getString("features", "").equals("true");
     start();
   }
 
@@ -29,6 +31,14 @@ public final class SmokeInstrumentation extends Instrumentation {
   public void onStart() {
     Bundle result = new Bundle();
     try {
+      if (!timerPhase.isEmpty()) {
+        timerLifecycle();
+        result.putString(
+            "stream",
+            "\nPASS: timer lifecycle " + timerPhase + "; " + assertions + " assertions.\n");
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
       if (!upgradePhase.isEmpty()) {
         upgrade();
         result.putString(
@@ -40,6 +50,12 @@ public final class SmokeInstrumentation extends Instrumentation {
           new Credentials(getTargetContext()).server().isEmpty(),
           "Use a clean emulator; refuses to change a connected app.");
       cleanTest = true;
+      // The main suite tests allowed notifications; refusal has its own lifecycle phase.
+      if (Build.VERSION.SDK_INT >= 33)
+        getUiAutomation()
+            .grantRuntimePermission(
+                getTargetContext().getPackageName(),
+                android.Manifest.permission.POST_NOTIFICATIONS);
       android.accessibilityservice.AccessibilityServiceInfo service =
           getUiAutomation().getServiceInfo();
       service.flags |=
@@ -51,6 +67,7 @@ public final class SmokeInstrumentation extends Instrumentation {
       offlineTimerConflict();
       rejectedActivities();
       historicEdits();
+      syncedDeletions();
       activityPreferences();
       credentials();
       getTargetContext()
@@ -64,6 +81,15 @@ public final class SmokeInstrumentation extends Instrumentation {
                   .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
       waitForIdleSync();
       capture("01-connect");
+      if (featuresOnly) {
+        agePresentation();
+        deletionPresentation();
+        notificationPresentation();
+        promotionState();
+        result.putString("stream", "\nPASS: focused features; " + assertions + " assertions.\n");
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
       if (!scanMode.isEmpty()) {
         scanner(activity);
         result.putString(
@@ -123,6 +149,10 @@ public final class SmokeInstrumentation extends Instrumentation {
       syncPresentation();
       rejectionPresentation();
       editingPresentation();
+      agePresentation();
+      deletionPresentation();
+      notificationPresentation();
+      promotionState();
       result.putString(
           "stream",
           "\nPASS: "
@@ -1176,10 +1206,10 @@ public final class SmokeInstrumentation extends Instrumentation {
           locations != null && locations.length == 1 ? (android.graphics.RectF) locations[0] : null;
       check(
           last != null && bounds.contains((int) last.centerX(), (int) last.centerY()),
-          "The last character of a long dropdown option is visible inside its row");
+          "The last character of the label is visible inside its row");
       return;
     }
-    throw new AssertionError("Missing dropdown option: " + text);
+    throw new AssertionError("Missing readable label: " + text);
   }
 
   private void diagnosticsFlow() throws Exception {
@@ -1564,6 +1594,396 @@ public final class SmokeInstrumentation extends Instrumentation {
     }
   }
 
+  private void syncedDeletions() throws Exception {
+    String name = "deletion-test.db";
+    getTargetContext().deleteDatabase(name);
+    LocalStore store = new LocalStore(getTargetContext(), name);
+    JSONObject original =
+        new JSONObject()
+            .put("id", 31)
+            .put("child", 1)
+            .put("note", "Offline deletion")
+            .put("time", "2026-01-01T00:00:00Z");
+    JSONObject other = Records.copy(original).put("id", 32).put("child", 2);
+    store.replace(new JSONObject().put("notes", new JSONArray().put(original).put(other)));
+    store.enqueueDeletion("notes", original);
+    long id = store.pending().get(0).getLong("local_id");
+    boolean duplicate = false, editBlocked = false;
+    try {
+      store.enqueueDeletion("notes", original);
+    } catch (IllegalArgumentException expected) {
+      duplicate = true;
+    }
+    try {
+      store.enqueueEdit("notes", original, Records.copy(original).put("note", "Edit"));
+    } catch (IllegalArgumentException expected) {
+      editBlocked = true;
+    }
+    check(
+        duplicate && editBlocked && store.pending().size() == 1,
+        "Repeated delete/edit actions preserve one pending change per original ID");
+    store.close();
+    store = new LocalStore(getTargetContext(), name);
+    check(
+        ActivityDeletions.isDeletion(store.pending().get(0))
+            && store.pending().get(0).getJSONObject("original").getLong("id") == 31,
+        "Offline deletion intent and original identity survive database reopen");
+    check(
+        store.snapshot().getJSONArray("notes").length() == 2,
+        "Pending deletion preserves confirmed history until accepted");
+    store.claim(id);
+    store.close();
+    store = new LocalStore(getTargetContext(), name);
+    check(
+        store.pending().get(0).getString("state").equals("review"),
+        "Interrupted deletion remains uncertain after restart");
+    store.removedActivity(id, "notes", 31);
+    check(
+        store.pending().isEmpty()
+            && store.snapshot().getJSONArray("notes").length() == 1
+            && store.snapshot().getJSONArray("notes").getJSONObject(0).getLong("id") == 32,
+        "Confirmed deletion atomically removes only the target record and its queue entry");
+    store.enqueueDeletion("notes", other);
+    store.discard(store.pending().get(0).getLong("local_id"));
+    check(
+        store.snapshot().getJSONArray("notes").length() == 1,
+        "Discarding a deletion request preserves the cached server record");
+    store.enqueueEdit("notes", other, Records.copy(other).put("note", "Pending edit"));
+    boolean deletionBlocked = false;
+    try {
+      store.enqueueDeletion("notes", other);
+    } catch (IllegalArgumentException expected) {
+      deletionBlocked = true;
+    }
+    check(deletionBlocked, "Deletion cannot erase an existing pending edit");
+    store.close();
+    getTargetContext().deleteDatabase(name);
+  }
+
+  private void agePresentation() throws Exception {
+    AppController app = AppController.get(getTargetContext());
+    try {
+      runOnMainSync(app::demo);
+      JSONObject note = app.data.getJSONArray("notes").getJSONObject(0);
+      note.put("time", java.time.Instant.now().minusSeconds(18 * 3600 + 40 * 60 + 5).toString());
+      note.put("note", "Age-format test");
+      runOnMainSync(() -> app.listener.run());
+      click("Timeline");
+      check(awaitText("18h 40m ago"), "History retains minutes after twelve hours");
+      readableChoice("18h 40m ago");
+      capture("29-history-hours-minutes");
+    } finally {
+      runOnMainSync(app::disconnect);
+    }
+  }
+
+  private void promotionState() throws Exception {
+    AppController app = AppController.get(getTargetContext());
+    NotificationManager manager = getTargetContext().getSystemService(NotificationManager.class);
+    boolean supported = Build.VERSION.SDK_INT >= 36;
+    boolean allowed = supported && manager.canPostPromotedNotifications();
+    JSONObject start =
+        new JSONObject()
+            .put("child", 1)
+            .put("start", java.time.Instant.now().minusSeconds(65).toString());
+    try {
+      app.store.replace(DemoData.create().put("timers", new JSONArray()));
+      app.store.startTimer("sleep", start);
+      long id = app.store.timers().get(0).getLong("id");
+      runOnMainSync(
+          () -> {
+            app.busy = true;
+            app.data = app.store.snapshot();
+            app.refreshNotifications();
+          });
+      pause();
+      Notification local = timerNotifications(manager)[0].getNotification();
+      check(
+          local.extras.getBoolean(TimerNotifications.REQUEST_PROMOTION) == allowed,
+          "Local offline start requests promotion only when supported and allowed");
+      if (allowed) {
+        check(
+            local.hasPromotableCharacteristics(),
+            "Local timer meets native promotion requirements");
+        check(
+            (local.flags & Notification.FLAG_PROMOTED_ONGOING) != 0,
+            "Android actually promoted the local timer");
+      }
+      check(
+          !local.extras.containsKey("android.shortCriticalText"),
+          "No static chip text overrides the native count-up chronometer");
+      if (supported) {
+        check(local.deleteIntent != null, "Local timer has an explicit dismissal receiver");
+        local.deleteIntent.send();
+        pause();
+      }
+      // A new manager instance must use persisted dismissal state, not an in-memory flag.
+      new TimerNotifications(getTargetContext())
+          .update(app.data, app.timers(), app.pending(), false);
+      pause();
+      check(
+          !timerNotifications(manager)[0]
+              .getNotification()
+              .extras
+              .getBoolean(TimerNotifications.REQUEST_PROMOTION),
+          "Dismissed timer is not promoted again after manager recreation");
+      List<JSONObject> linked = app.timers();
+      linked.get(0).put("server_id", 901);
+      JSONObject remote = Records.copy(start).put("id", 901).put("name", "Sleep");
+      JSONObject data = Records.copy(app.data).put("timers", new JSONArray().put(remote));
+      new TimerNotifications(getTargetContext()).update(data, linked, app.pending(), false);
+      pause();
+      check(
+          timerNotifications(manager).length == 1
+              && !timerNotifications(manager)[0]
+                  .getNotification()
+                  .extras
+                  .getBoolean(TimerNotifications.REQUEST_PROMOTION),
+          "Server publication preserves dismissal and deduplicates the local timer");
+      new TimerNotifications(getTargetContext())
+          .update(data, Collections.emptyList(), Collections.emptyList(), false);
+      pause();
+      Notification shared = timerNotifications(manager)[0].getNotification();
+      check(
+          !shared.extras.getBoolean(TimerNotifications.REQUEST_PROMOTION)
+              && shared.deleteIntent == null,
+          "A caregiver-only timer never requests promotion");
+      // Ending a timer prunes dismissal state. A later timer can be promoted.
+      app.store.discardTimer(id);
+      new TimerNotifications(getTargetContext())
+          .update(new JSONObject(), Collections.emptyList(), Collections.emptyList(), false);
+      pause();
+      check(timerNotifications(manager).length == 0, "Ended timer notification is removed");
+      app.store.startTimer(
+          "sleep", Records.copy(start).put("start", java.time.Instant.now().toString()));
+      runOnMainSync(app::refreshNotifications);
+      pause();
+      check(
+          timerNotifications(manager)[0]
+                  .getNotification()
+                  .extras
+                  .getBoolean(TimerNotifications.REQUEST_PROMOTION)
+              == allowed,
+          "A new local timer remains eligible after an earlier timer was dismissed");
+    } finally {
+      runOnMainSync(
+          () -> {
+            app.busy = false;
+            app.disconnect();
+          });
+    }
+    pause();
+    check(timerNotifications(manager).length == 0, "Disconnect clears active notifications");
+  }
+
+  private void deletionPresentation() throws Exception {
+    AppController app = AppController.get(getTargetContext());
+    try {
+      runOnMainSync(() -> app.demo());
+      JSONObject note = app.data.getJSONArray("notes").getJSONObject(0);
+      note.put("time", java.time.Instant.now().minusSeconds(60).toString());
+      note.put("note", "Activity to delete");
+      runOnMainSync(() -> app.listener.run());
+      click("Timeline");
+      click("Activity to delete");
+      pause();
+      readableChoice("Edit activity");
+      readableChoice("Delete activity");
+      capture("25-activity-details");
+      click("Delete activity");
+      check(awaitText("Delete this activity?"), "Deletion requires deliberate confirmation");
+      click("Keep activity");
+      check(app.data.getJSONArray("notes").length() == 1, "Keep activity cancels deletion");
+      click("Activity to delete");
+      click("Delete activity");
+      pause();
+      capture("25-delete-confirmation");
+      click("Delete activity");
+      check(
+          app.data.getJSONArray("notes").length() == 0, "Confirmed sample deletion removes record");
+
+      // The connected fixture is held offline without running any network request.
+      app.store.replace(new JSONObject().put("notes", new JSONArray().put(note)));
+      app.credentials.save("https://sync-test.invalid", "synthetic-sync-token");
+      runOnMainSync(
+          () -> {
+            app.demo = false;
+            app.busy = true;
+            Records.put(app.data, "notes", new JSONArray().put(note));
+            app.listener.run();
+          });
+      click("Timeline");
+      click("Activity to delete");
+      click("Delete activity");
+      check(awaitText("for all caregivers"), "Server deletion confirmation explains shared effect");
+      pause();
+      capture("26-server-delete-confirmation");
+      click("Delete activity");
+      check(
+          app.pending().size() == 1 && ActivityDeletions.isDeletion(app.pending().get(0)),
+          "UI queues synced deletion durably while offline");
+      click("Activity to delete");
+      check(
+          awaitText("Waiting to delete") && contains("Discard deletion request"),
+          "Pending deletion card opens its own review flow");
+      check(!contains("Edit activity"), "Pending deletion cannot be edited into another operation");
+      pause();
+      capture("26-deletion-pending");
+      click("Close");
+      app.store.state(
+          app.pending().get(0).getLong("local_id"), "rejected", ActivityDeletions.CONFLICT);
+      runOnMainSync(
+          () -> {
+            app.busy = false;
+            app.listener.run();
+          });
+      click("Activity to delete");
+      check(awaitText("changed on another device"), "Caregiver deletion conflict is explained");
+      click("Discard deletion request");
+      check(
+          awaitText("does not restore"), "Discard confirmation never promises server restoration");
+      click("Discard request");
+      check(
+          app.pending().isEmpty() && app.store.snapshot().getJSONArray("notes").length() == 1,
+          "Discard request preserves original record");
+    } finally {
+      runOnMainSync(
+          () -> {
+            app.busy = false;
+            app.disconnect();
+          });
+    }
+  }
+
+  private android.service.notification.StatusBarNotification[] timerNotifications(
+      NotificationManager manager) {
+    // Android may add its own automatic group-summary notification.
+    return Arrays.stream(manager.getActiveNotifications())
+        .filter(n -> n.getTag() != null && n.getTag().startsWith("timer:"))
+        .toArray(android.service.notification.StatusBarNotification[]::new);
+  }
+
+  private void notificationPresentation() throws Exception {
+    AppController app = AppController.get(getTargetContext());
+    NotificationManager manager = getTargetContext().getSystemService(NotificationManager.class);
+    if (Build.VERSION.SDK_INT >= 33)
+      getUiAutomation()
+          .grantRuntimePermission(
+              getTargetContext().getPackageName(), android.Manifest.permission.POST_NOTIFICATIONS);
+    try {
+      runOnMainSync(() -> app.demo());
+      JSONObject start =
+          new JSONObject()
+              .put("child", app.child())
+              .put("start", java.time.Instant.now().minusSeconds(65).toString());
+      runOnMainSync(
+          () -> {
+            try {
+              app.startTimer("sleep", start);
+            } catch (Exception e) {
+              throw new RuntimeException(e);
+            }
+          });
+      pause();
+      android.service.notification.StatusBarNotification[] active = timerNotifications(manager);
+      check(active.length == 1, "One notification represents a linked local/shared timer once");
+      Notification notification = active[0].getNotification();
+      check(
+          (notification.flags & Notification.FLAG_ONGOING_EVENT) != 0
+              && notification.extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)
+              && notification.when == Records.time(start).toEpochMilli(),
+          "Ongoing notification uses the saved start time and Android's chronometer");
+      check(
+          notification.visibility == Notification.VISIBILITY_PRIVATE
+              && notification.publicVersion != null
+              && !notification
+                  .publicVersion
+                  .extras
+                  .getCharSequence(Notification.EXTRA_TITLE)
+                  .toString()
+                  .contains("Maya"),
+          "Lock-screen public view hides child and activity details");
+      check(
+          manager.getNotificationChannel(TimerNotifications.CHANNEL).getImportance()
+              == NotificationManager.IMPORTANCE_LOW,
+          "Timer channel is quiet and low importance");
+      getUiAutomation()
+          .performGlobalAction(
+              android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME);
+      pause();
+      capture("27-timer-chip-home");
+      SystemClock.sleep(2200);
+      capture("27-timer-chip-home-later");
+      getUiAutomation().executeShellCommand("cmd statusbar expand-notifications").close();
+      pause();
+      capture("27-timer-notification");
+      getUiAutomation().executeShellCommand("cmd statusbar collapse").close();
+      pause();
+      notification.contentIntent.send();
+      pause();
+      click("Settings");
+      notification.contentIntent.send();
+      pause();
+      check(awaitText("Stop & save"), "Notification tap opens Today with the running timer");
+      runOnMainSync(
+          () -> {
+            try {
+              app.startTimer("sleep", Records.copy(start).put("child", 2));
+            } catch (Exception e) {
+              throw new RuntimeException(e);
+            }
+          });
+      pause();
+      check(
+          timerNotifications(manager).length == 2,
+          "Different children retain separate notifications: "
+              + Arrays.toString(
+                  Arrays.stream(manager.getActiveNotifications()).map(n -> n.getTag()).toArray()));
+      runOnMainSync(
+          () -> {
+            try {
+              app.cancelTimer(app.timers().get(1).getLong("id"));
+            } catch (Exception e) {
+              throw new RuntimeException(e);
+            }
+          });
+      pause();
+      check(
+          timerNotifications(manager).length == 1,
+          "Cancelling one child's timer removes only its notification");
+      click("Stop & save");
+      pause();
+      check(timerNotifications(manager).length == 0, "Stopping a timer removes its notification");
+
+      JSONObject local =
+          new JSONObject().put("id", 1).put("endpoint", "sleep").put("payload", start);
+      JSONObject shared = Records.copy(start).put("id", 55);
+      JSONObject data = new JSONObject().put("timers", new JSONArray().put(shared));
+      local.put("server_id", 55);
+      check(
+          TimerNotifications.running(data, Arrays.asList(local), Collections.emptyList()).size()
+              == 1,
+          "Shared and local identities reconcile into one timer notification");
+      JSONObject finish = new JSONObject().put("cleanup_timer", 55).put("payload", start);
+      check(
+          TimerNotifications.running(data, Arrays.asList(local), Arrays.asList(finish)).isEmpty(),
+          "Pending shared finish hides the stale server timer notification");
+      local.remove("server_id");
+      local.put("finish_payload", start);
+      check(
+          TimerNotifications.running(
+                  new JSONObject(), Arrays.asList(local), Collections.emptyList())
+              .isEmpty(),
+          "Uncertain start with a saved stop does not show as running");
+    } finally {
+      runOnMainSync(
+          () -> {
+            app.busy = false;
+            app.disconnect();
+          });
+    }
+  }
+
   private void scanner(Activity activity) throws Exception {
     String server = "https://qr-test.example/api/";
     String token = "0123456789abcdef0123456789abcdef01234567";
@@ -1625,6 +2045,135 @@ public final class SmokeInstrumentation extends Instrumentation {
         if (tokenFieldMatches(group.getChildAt(i), token)) return true;
     }
     return false;
+  }
+
+  private void timerLifecycle() throws Exception {
+    Credentials credentials = new Credentials(getTargetContext());
+    String fixture = "https://notification-test.invalid";
+    if (timerPhase.equals("seed-denied")) {
+      check(credentials.server().isEmpty(), "Lifecycle fixture requires a disconnected test app");
+      AppController app = AppController.get(getTargetContext());
+      JSONObject start =
+          new JSONObject()
+              .put("child", 1)
+              .put("start", java.time.Instant.now().minusSeconds(65).toString());
+      app.store.clear();
+      app.store.replace(DemoData.create());
+      app.store.startTimer("sleep", start);
+      app.preferences.edit().clear().commit();
+      credentials.save(fixture, "synthetic-notification-token");
+      runOnMainSync(
+          () -> {
+            app.demo = false;
+            app.busy = true;
+            app.data = app.store.snapshot();
+          });
+      startActivitySync(
+          new Intent(getTargetContext(), MainActivity.class)
+              .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+      waitForIdleSync();
+      if (Build.VERSION.SDK_INT >= 33) {
+        check(
+            awaitText("Allow Baby Buddy Pocket"),
+            "Timer permission is requested when a timer exists");
+        capture("28-notification-permission");
+        boolean denied = false;
+        for (AccessibilityNodeInfo node : nodes(uiRoot())) {
+          String label = String.valueOf(node.getText()).replace('\u2019', '\'');
+          if (label.equalsIgnoreCase("Don't allow") || label.equalsIgnoreCase("Deny"))
+            denied = node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+        }
+        check(denied, "Permission refusal action is available");
+        pause();
+        check(
+            !getTargetContext()
+                .getSystemService(NotificationManager.class)
+                .areNotificationsEnabled(),
+            "Notification permission can be declined");
+      }
+      check(
+          app.store.timers().size() == 1
+              && app.store
+                  .timers()
+                  .get(0)
+                  .getJSONObject("payload")
+                  .getString("start")
+                  .equals(start.getString("start")),
+          "Denied notification permission preserves the durable timer and start");
+      check(awaitText("Stop & save"), "Timer remains usable with notifications denied");
+      return;
+    }
+    check(
+        credentials.server().equals(ApiClient.normalize(fixture).toString())
+            && credentials.token().equals("synthetic-notification-token"),
+        "Lifecycle continuation only touches its synthetic fixture");
+    AppController app = AppController.get(getTargetContext());
+    NotificationManager manager = getTargetContext().getSystemService(NotificationManager.class);
+    if (timerPhase.equals("dismiss")) {
+      runOnMainSync(app::refreshNotifications);
+      pause();
+      Notification notification = timerNotifications(manager)[0].getNotification();
+      check(notification.deleteIntent != null, "Restored local timer supports dismissal");
+      notification.deleteIntent.send();
+      pause();
+      check(
+          app.preferences.getStringSet("dismissed_timer_promotions", Collections.emptySet()).size()
+              == 1,
+          "Dismissal is committed before process exit");
+    } else if (timerPhase.equals("restore") || timerPhase.equals("restore-dismissed")) {
+      check(app.store.timers().size() == 1, "Timer survives process/device restart");
+      runOnMainSync(app::refreshNotifications);
+      pause();
+      android.service.notification.StatusBarNotification[] active = timerNotifications(manager);
+      check(active.length == 1, "Timer notification is present after restoration");
+      check(
+          active[0].getNotification().when
+              == Records.time(app.store.timers().get(0).getJSONObject("payload")).toEpochMilli(),
+          "Restored notification retains the original elapsed-time base");
+      if (timerPhase.equals("restore-dismissed")) {
+        check(
+            !active[0].getNotification().extras.getBoolean(TimerNotifications.REQUEST_PROMOTION)
+                && app.preferences
+                        .getStringSet("dismissed_timer_promotions", Collections.emptySet())
+                        .size()
+                    == 1,
+            "Dismissal survives a real process restart without losing the timer");
+      }
+    } else if (timerPhase.equals("finish")) {
+      runOnMainSync(
+          () -> {
+            app.busy = true;
+            try {
+              JSONObject timer = app.store.timers().get(0);
+              app.finishTimer(
+                  timer.getLong("id"),
+                  Records.copy(timer.getJSONObject("payload"))
+                      .put("end", java.time.Instant.now().toString()));
+            } catch (Exception e) {
+              throw new RuntimeException(e);
+            }
+          });
+      pause();
+      check(timerNotifications(manager).length == 0, "Offline Stop removes notification");
+      check(
+          app.store.timers().isEmpty()
+              && app.store.pending().size() == 1
+              && app.store.pending().get(0).getString("endpoint").equals("sleep"),
+          "Offline Stop preserves a single completed log");
+    } else if (timerPhase.equals("verify-finished")) {
+      check(
+          timerNotifications(manager).length == 0 && app.store.timers().isEmpty(),
+          "Restart does not resurrect a stopped timer notification");
+      check(
+          app.store.pending().size() == 1
+              && app.store.pending().get(0).getString("endpoint").equals("sleep"),
+          "Completed offline log survives restart");
+      runOnMainSync(
+          () -> {
+            app.busy = false;
+            app.disconnect();
+          });
+    } else throw new IllegalArgumentException("Unknown timer lifecycle phase");
   }
 
   private void upgrade() throws Exception {

@@ -17,6 +17,7 @@ public final class AppController {
 
   public final LocalStore store;
   private final DiagnosticLog diagnostics;
+  private final TimerNotifications notifications;
   public final Credentials credentials;
   public final SharedPreferences preferences;
   private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -31,6 +32,7 @@ public final class AppController {
   private AppController(Context context) {
     diagnostics =
         new DiagnosticLog(new java.io.File(context.getNoBackupFilesDir(), "diagnostics.json"));
+    notifications = new TimerNotifications(context);
     store = new LocalStore(context);
     store.recoverRejectedTimers(true);
     credentials = new Credentials(context);
@@ -59,7 +61,24 @@ public final class AppController {
         preferences.getBoolean("fahrenheit", false));
   }
 
+  void refreshNotifications() {
+    try {
+      notifications.update(data, timers(), pending(), demo);
+    } catch (RuntimeException e) {
+      log(DiagnosticLog.Event.LOCAL_FAILURE, e);
+    }
+  }
+
+  void dismissTimerNotification(String key) {
+    try {
+      notifications.dismiss(key, timers(), pending(), demo);
+    } catch (RuntimeException e) {
+      log(DiagnosticLog.Event.LOCAL_FAILURE, e);
+    }
+  }
+
   private void changed() {
+    refreshNotifications();
     if (listener != null) listener.run();
   }
 
@@ -423,6 +442,21 @@ public final class AppController {
     }
     if (!connected()) throw new IllegalStateException("Connect a server before editing.");
     store.enqueueEdit(endpoint, original, payload);
+    changed();
+    sync();
+  }
+
+  void deleteActivity(String endpoint, JSONObject original) throws Exception {
+    if (demo) {
+      JSONArray rows = data.getJSONArray(endpoint), remaining = new JSONArray();
+      for (int i = 0; i < rows.length(); i++)
+        if (rows.getJSONObject(i).getLong("id") != original.getLong("id"))
+          remaining.put(rows.getJSONObject(i));
+      data.put(endpoint, remaining);
+    } else {
+      if (!connected()) throw new IllegalStateException("Connect a server before deleting.");
+      store.enqueueDeletion(endpoint, original);
+    }
     changed();
     sync();
   }

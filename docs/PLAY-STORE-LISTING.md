@@ -22,7 +22,7 @@ Keep your baby’s day in one place:
 
 - Log feeds, sleep, diaper changes, tummy time, pumping, and other activities supported by your server.
 - See recent activity, a shared timeline, and simple trends.
-- Start shared timers and save completed activities.
+- Start shared timers, see elapsed time in an ongoing notification, and save completed activities.
 - Choose which activity panels you see and remember frequently used choices.
 - Use light or dark mode.
 
@@ -32,7 +32,7 @@ Your records sync directly with the Baby Buddy server you choose. No advertising
 
 Want to explore before setting up a server? Try the offline demo with fictional sample data. Demo entries reset when the app process restarts and are not uploaded.
 
-Manage children, photos, and edits to existing records in your Baby Buddy server’s web interface. Available fields and actions depend on your server version and account permissions.
+Edit or delete activities in the app, including saving deletion requests offline. Manage children and photos in the Baby Buddy server web interface. Available fields and actions depend on your server version and account permissions.
 
 Baby Buddy Pocket is an independent project, not an official release of the Baby Buddy server project or the Baby Buddy Companion iPhone app.
 
